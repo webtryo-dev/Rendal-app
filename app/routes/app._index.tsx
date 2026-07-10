@@ -89,17 +89,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const metaobjectResponse = await admin.graphql(
     `#graphql
-    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
-      metaobjectUpsert(handle: $handle, metaobject: $metaobject) {
+    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $values: JSON!) {
+      metaobjectUpsert(handle: $handle, values: $values) {
         metaobject {
           id
           handle
-          title: field(key: "title") {
-            jsonValue
-          }
-          description: field(key: "description") {
-            jsonValue
-          }
+          values
         }
         userErrors {
           field
@@ -113,15 +108,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           type: "$app:example",
           handle: "demo-entry",
         },
-        metaobject: {
-          fields: [
-            { key: "title", value: "Demo Entry" },
-            {
-              key: "description",
-              value:
-                "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
-            },
-          ],
+        values: {
+          title: "Demo Entry",
+          description:
+            "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
         },
       },
     },
@@ -133,8 +123,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     product: responseJson!.data!.productCreate!.product,
     variant:
       variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
-    metaobject:
-      metaobjectResponseJson!.data!.metaobjectUpsert!.metaobject,
+    metaobject: metaobjectResponseJson!.data!.metaobjectUpsert!.metaobject,
   };
 };
 
