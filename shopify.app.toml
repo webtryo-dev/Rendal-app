@@ -1,22 +1,28 @@
-# This file stores configurations for your Shopify app.
-client_id = ""
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "9ae5a24a40d712d5f46973cfaa0c1f99"
+name = "Rendal"
+application_url = "https://shopify.dev/apps/default-app-home"
+embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,write_metaobjects,write_metaobject_definitions"
+scopes = "read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_draft_orders,write_draft_orders,read_discounts,write_discounts,read_price_rules,write_price_rules,read_shipping,write_shipping,read_themes,write_themes,read_fulfillments,write_fulfillments,read_customers,write_customers,read_content,write_content,read_locations,read_marketing_events,write_marketing_events,read_markets_home"
 
-# Product metafield for tracking demo products created by this template
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
 name = "Demo Source Info"
 description = "Tracks products created by the Shopify app template for development"
-access.admin = "merchant_read_write"
 
-# Example metaobject definition
+  [product.metafields.app.demo_info.access]
+  admin = "merchant_read_write"
+
 [metaobjects.app.example]
 name = "Example"
 description = "An example metaobject definition created by this template"
-access.admin = "merchant_read_write"
+
+  [metaobjects.app.example.access]
+  admin = "merchant_read_write"
 
 [metaobjects.app.example.fields.title]
 name = "Title"
@@ -28,36 +34,19 @@ name = "Description"
 type = "multi_line_text_field"
 
 [webhooks]
-api_version = "2026-07"
+api_version = "2026-10"
 
-  # Handled by: /app/routes/webhooks.app.uninstalled.tsx
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/uninstalled"
-  topics = ["app/uninstalled"]
+  topics = [ "app/uninstalled" ]
 
-  # Handled by: /app/routes/webhooks.app.scopes_update.tsx
   [[webhooks.subscriptions]]
-  topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
 
-  # Webhooks can have filters
-  # Only receive webhooks for product updates with a product price >= 10.00
-  # See: https://shopify.dev/docs/apps/build/webhooks/customize/filters
-  # [[webhooks.subscriptions]]
-  # topics = ["products/update"]
-  # uri = "/webhooks/products/update"
-  # filter = "variants.price:>=10.00"
+[auth]
+redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
 
-  # Mandatory compliance topic for public apps only
-  # See: https://shopify.dev/docs/apps/build/privacy-law-compliance
-  # [[webhooks.subscriptions]]
-  # uri = "/webhooks/customers/data_request"
-  # compliance_topics = ["customers/data_request"]
-
-  # [[webhooks.subscriptions]]
-  # uri = "/webhooks/customers/redact"
-  # compliance_topics = ["customers/redact"]
-
-  # [[webhooks.subscriptions]]
-  # uri = "/webhooks/shop/redact"
-  # compliance_topics = ["shop/redact"]
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = true

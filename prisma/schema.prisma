@@ -1,34 +1,165 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Skill {
+  id           String   @id @default(cuid())
+  shop         String
+  name         String
+  trigger      String
+  instructions String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([shop, trigger])
+}
+
+model McpServer {
+  id        String   @id @default(cuid())
+  shop      String
+  name      String
+  url       String
+  authToken String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shop, name])
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model chat_messages {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chat_id        String          @db.Uuid
+  role           String
+  model_provider String?
+  model_name     String?
+  content        String?
+  image_urls     String[]
+  tool_calls     Json?
+  created_at     DateTime        @default(now()) @db.Timestamptz(6)
+  chats          chats           @relation(fields: [chat_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  credit_ledger  credit_ledger[]
+
+  @@index([chat_id], map: "idx_chat_messages_chat_id")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model chats {
+  id            String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_id       String          @db.Uuid
+  title         String?
+  created_at    DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime        @default(now()) @db.Timestamptz(6)
+  chat_messages chat_messages[]
+  shops         shops           @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([shop_id], map: "idx_chats_shop_id")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model credit_ledger {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_id          String         @db.Uuid
+  chat_message_id  String?        @db.Uuid
+  model_provider   String?
+  model_name       String?
+  input_tokens     Int?
+  output_tokens    Int?
+  real_cost_usd    Decimal        @db.Decimal(12, 6)
+  credits_deducted BigInt
+  overage_billed   Boolean        @default(false)
+  created_at       DateTime       @default(now()) @db.Timestamptz(6)
+  chat_messages    chat_messages? @relation(fields: [chat_message_id], references: [id], onUpdate: NoAction)
+  shops            shops          @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([shop_id], map: "idx_credit_ledger_shop_id")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model mcp_connections {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_id              String   @db.Uuid
+  name                 String
+  server_url           String
+  auth_token_encrypted String?
+  enabled              Boolean  @default(true)
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  shops                shops    @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([shop_id], map: "idx_mcp_connections_shop_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model shops {
+  id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_domain          String            @unique
+  plan                 String            @default("starter")
+  credit_balance       BigInt            @default(0)
+  billing_period_start DateTime          @default(now()) @db.Timestamptz(6)
+  created_at           DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime          @default(now()) @db.Timestamptz(6)
+  email                String?
+  chats                chats[]
+  credit_ledger        credit_ledger[]
+  mcp_connections      mcp_connections[]
+  skills               skills[]
+  usage_logs           usage_logs[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model skills {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_id          String   @db.Uuid
+  name             String
+  trigger          String
+  instructions     String
+  is_starter_skill Boolean  @default(false)
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @default(now()) @db.Timestamptz(6)
+  shops            shops    @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([shop_id, trigger])
+  @@index([shop_id], map: "idx_skills_shop_id")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model usage_logs {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_id              String   @db.Uuid
+  billing_period_start DateTime @db.Timestamptz(6)
+  total_credits_used   BigInt   @default(0)
+  total_real_cost_usd  Decimal  @default(0) @db.Decimal(12, 6)
+  message_count        Int      @default(0)
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime @default(now()) @db.Timestamptz(6)
+  shops                shops    @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([shop_id, billing_period_start])
 }

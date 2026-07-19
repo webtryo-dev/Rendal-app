@@ -1,5 +1,5 @@
 {
-  "name": "app",
+  "name": "claude-for-shopify",
   "private": true,
   "scripts": {
     "build": "react-router build",
@@ -24,6 +24,9 @@
     "node": ">=20.19 <22 || >=22.12"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
+    "@google/genai": "^2.11.0",
+    "@modelcontextprotocol/client": "^2.0.0-beta.3",
     "@prisma/client": "^6.16.3",
     "@react-router/dev": "^7.12.0",
     "@react-router/fs-routes": "^7.12.0",
@@ -33,6 +36,7 @@
     "@shopify/shopify-app-react-router": "^1.2.1",
     "@shopify/shopify-app-session-storage-prisma": "^9.0.0",
     "isbot": "^5.1.31",
+    "openai": "^6.46.0",
     "prisma": "^6.16.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -40,6 +44,7 @@
     "vite-tsconfig-paths": "^5.1.4"
   },
   "devDependencies": {
+    "@modelcontextprotocol/server": "^2.0.0-beta.3",
     "@shopify/api-codegen-preset": "^1.2.0",
     "@shopify/polaris-types": "^1.0.1",
     "@types/eslint": "^9.6.1",
@@ -59,15 +64,14 @@
     "typescript": "^5.9.3",
     "vite": "^6.3.6"
   },
-  "workspaces": {
-    "packages": [
-      "extensions/*"
-    ]
-  },
+  "workspaces": [
+    "extensions/*"
+  ],
   "trustedDependencies": [
     "@shopify/plugin-cloudflare"
   ],
   "overrides": {
     "p-map": "^4.0.0"
-  }
+  },
+  "author": "Dawyy"
 }
