@@ -430,6 +430,7 @@ async function graphqlJson(
   admin: AdminContext,
   query: string,
   variables?: Record<string, unknown>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<Record<string, any>> {
   const response = await admin.graphql(query, variables ? { variables } : undefined);
   const json = await response.json();
