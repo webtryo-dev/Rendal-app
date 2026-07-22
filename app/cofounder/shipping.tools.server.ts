@@ -64,12 +64,44 @@ export const SHIPPING_TOOL_DEFS: NeutralToolDef[] = [
       required: ["profileId", "locationGroupId", "zoneId", "rateName", "price"],
     },
   },
+  {
+    name: "delete_shipping_zone",
+    description:
+      "Propose deleting an entire shipping zone — and every rate in it — from a delivery profile. The merchant sees a warning and must approve before anything is deleted. Get the profileId and zoneId from get_shipping_setup first, and pass the zone's name and countries so the merchant sees exactly what is being removed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        profileId: { type: "string", description: "DeliveryProfile GID from get_shipping_setup." },
+        zoneId: { type: "string", description: "DeliveryZone GID from get_shipping_setup." },
+        zoneName: { type: "string", description: "The zone's name, for the merchant-facing approval summary." },
+        countries: { type: "string", description: "The countries the zone covers (e.g. \"DE, FR, NL\"), for the merchant-facing approval summary." },
+      },
+      required: ["profileId", "zoneId"],
+    },
+  },
+  {
+    name: "delete_shipping_rate",
+    description:
+      "Propose removing one shipping rate (method definition) from a zone. The merchant sees a warning and must approve before anything is removed. Get the profileId and methodDefinitionId from get_shipping_setup first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        profileId: { type: "string", description: "DeliveryProfile GID from get_shipping_setup." },
+        methodDefinitionId: { type: "string", description: "DeliveryMethodDefinition GID from get_shipping_setup." },
+        rateName: { type: "string", description: "The rate's name, for the merchant-facing approval summary." },
+        zoneName: { type: "string", description: "The zone the rate belongs to, for the merchant-facing approval summary." },
+      },
+      required: ["profileId", "methodDefinitionId"],
+    },
+  },
 ];
 
 export const SHIPPING_WRITE_TOOL_NAMES = [
   "create_shipping_zone",
   "update_shipping_zone",
   "set_shipping_rate",
+  "delete_shipping_zone",
+  "delete_shipping_rate",
 ];
 
 // ---------------------------------------------------------------------------
@@ -259,6 +291,34 @@ export async function executeShippingWriteTool(
         isError: false,
       };
     }
+    case "delete_shipping_zone": {
+      const json = await graphqlJson(admin, DELIVERY_PROFILE_UPDATE_MUTATION, {
+        id: input.profileId,
+        profile: { zonesToDelete: [input.zoneId] },
+      });
+      const userErrors = json.data?.deliveryProfileUpdate?.userErrors ?? [];
+      if (userErrors.length > 0) {
+        return { content: `Shipping zone deletion failed: ${JSON.stringify(userErrors)}`, isError: true };
+      }
+      return {
+        content: `Shipping zone ${input.zoneName ? `"${input.zoneName}"` : input.zoneId} deleted, including all its rates.`,
+        isError: false,
+      };
+    }
+    case "delete_shipping_rate": {
+      const json = await graphqlJson(admin, DELIVERY_PROFILE_UPDATE_MUTATION, {
+        id: input.profileId,
+        profile: { methodDefinitionsToDelete: [input.methodDefinitionId] },
+      });
+      const userErrors = json.data?.deliveryProfileUpdate?.userErrors ?? [];
+      if (userErrors.length > 0) {
+        return { content: `Shipping rate removal failed: ${JSON.stringify(userErrors)}`, isError: true };
+      }
+      return {
+        content: `Shipping rate ${input.rateName ? `"${input.rateName}"` : input.methodDefinitionId} removed.`,
+        isError: false,
+      };
+    }
     default:
       return null;
   }
@@ -290,6 +350,22 @@ export function summarizeShippingWrite(name: string, input: Record<string, unkno
       `${input.methodDefinitionId ? "Update" : "Add"} shipping rate "${input.rateName}"`,
       `Price: ${input.price} (shop currency)${Number(input.price) === 0 ? " — free shipping" : ""}`,
       `Zone: ${input.zoneId}`,
+    ];
+  }
+  if (name === "delete_shipping_zone") {
+    return [
+      `Delete shipping zone ${input.zoneName ? `"${input.zoneName}"` : input.zoneId}`,
+      ...(input.countries ? [`Covers: ${input.countries}`] : []),
+      `Zone ID: ${input.zoneId}`,
+      "This deletes the zone and ALL of its rates — customers in these countries won't be able to check out unless another zone covers them. This is not easily undone.",
+    ];
+  }
+  if (name === "delete_shipping_rate") {
+    return [
+      `Remove shipping rate ${input.rateName ? `"${input.rateName}"` : input.methodDefinitionId}`,
+      ...(input.zoneName ? [`From zone: ${input.zoneName}`] : []),
+      `Rate ID: ${input.methodDefinitionId}`,
+      "If this is the zone's only rate, customers in that zone won't be able to check out until a new rate is added. This is not easily undone.",
     ];
   }
   return null;

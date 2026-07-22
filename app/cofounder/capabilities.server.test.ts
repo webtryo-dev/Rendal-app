@@ -13,7 +13,7 @@ import type { ModelTier } from "./types";
 const STARTER_TOOL = "search_products";
 const GROWTH_TOOL = "create_shipping_zone";
 const SCALE_TOOL = "generate_image";
-const FOUNDER_TOOL = "publish_theme";
+const FOUNDER_TOOL = "update_shop_policies";
 
 describe("normalizePlan", () => {
   it("passes every known plan through unchanged", () => {

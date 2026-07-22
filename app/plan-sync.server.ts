@@ -1,6 +1,7 @@
 import prisma from "./db.server";
 import type { AdminContext } from "./cofounder/tools.server";
 import { PLAN_ORDER, type PlanKey } from "./cofounder/capabilities.server";
+import { planConfig } from "./cofounder/pricing.server";
 
 // ---------------------------------------------------------------------------
 // Keeps shops.plan aligned with what Shopify actually says instead of the
@@ -81,9 +82,16 @@ export async function syncPlanFromShopify<T extends ShopRow>(
 
     const mapped = active.map((s) => mapShopifyPlanToKey(s.name)).find(Boolean);
     if (mapped && mapped !== shop.plan) {
+      // A plan change starts the merchant on the new plan's full included
+      // allowance; whatever balance remained on the old plan does not carry
+      // over (matches the "included usage resets" model on the pricing page).
       const updated = await prisma.shops.update({
         where: { id: shop.id },
-        data: { plan: mapped, updated_at: new Date() },
+        data: {
+          plan: mapped,
+          credit_balance: planConfig(mapped).includedCredits,
+          updated_at: new Date(),
+        },
       });
       return { shop: { ...shop, ...updated }, hasActiveSubscription: true };
     }
@@ -97,6 +105,12 @@ export async function syncPlanFromShopify<T extends ShopRow>(
  * Apply the plan_handle Shopify appends when redirecting the merchant back
  * after a plan change. Persists and returns the mapped key, or null when the
  * handle doesn't correspond to a known plan (nothing is written).
+ *
+ * Also grants the plan's included credits, unconditionally: this is the only
+ * path that covers a fresh install picking Starter (shops.plan already
+ * defaults to "starter", so a plan-changed guard would never fire there), and
+ * the routes strip plan_handle from the URL after applying, so normal
+ * navigation doesn't replay the grant.
  */
 export async function applyPlanHandle(
   shopDomain: string,
@@ -104,10 +118,11 @@ export async function applyPlanHandle(
 ): Promise<PlanKey | null> {
   const key = mapShopifyPlanToKey(planHandle);
   if (!key) return null;
+  const included = planConfig(key).includedCredits;
   await prisma.shops.upsert({
     where: { shop_domain: shopDomain },
-    update: { plan: key, updated_at: new Date() },
-    create: { shop_domain: shopDomain, plan: key },
+    update: { plan: key, credit_balance: included, updated_at: new Date() },
+    create: { shop_domain: shopDomain, plan: key, credit_balance: included },
   });
   return key;
 }

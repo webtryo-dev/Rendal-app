@@ -62,11 +62,11 @@ const TOOLS_ADDED_BY_PLAN: Record<PlanKey, string[]> = {
     "create_discount_code",
     // shipping read
     "get_shipping_setup",
-    // theme read + edit (publish/unpublish is Founder-only, below)
+    // theme reads (advisory only — theme writes aren't offered; App Store
+    // requirement 5.1.1 forbids Theme API modification without an exemption)
     "list_themes",
     "list_theme_files",
     "read_theme_file",
-    "update_theme_file",
     // general shop read + web research
     "get_shop_info",
     "fetch_url",
@@ -93,12 +93,13 @@ const TOOLS_ADDED_BY_PLAN: Record<PlanKey, string[]> = {
     "generate_customer_csv",
   ],
 
-  // Founder — theme publish/unpublish and store-policy edits.
+  // Founder — store-policy edits. (Theme publish/unpublish lived here until
+  // the theme write tools were removed for App Store requirement 5.1.1.)
   //
   // NOTE: the "Automation email (connected ESP)" capability from the feature
   // matrix is intentionally omitted for now — no such tool exists yet. When it
   // lands, add its real tool name here to gate it to Founder.
-  founder: ["publish_theme", "unpublish_theme", "update_shop_policies"],
+  founder: ["update_shop_policies"],
 };
 
 /** Cumulative allowed-tool set per plan (each plan inherits everything below). */

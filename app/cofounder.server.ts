@@ -14,8 +14,6 @@ import {
   prepareDiscountStatusWrite,
   prepareImageUploadWrite,
   prepareShopPolicyWrite,
-  prepareThemePublishWrite,
-  prepareThemeWrite,
   summarizeWrite,
   type AdminContext,
 } from "./cofounder/tools.server";
@@ -80,8 +78,6 @@ const GATED_TOOL_ACTIONS: Record<string, string> = {
   read_analytics: "Reading store analytics",
   list_customers: "Viewing customer records",
   generate_customer_csv: "Exporting customers to CSV",
-  publish_theme: "Publishing a theme live",
-  unpublish_theme: "Changing the live theme",
   update_shop_policies: "Updating store policies",
 };
 
@@ -126,10 +122,9 @@ function buildSystemPrompt(shopDomain: string, skills: MatchedSkill[]): string {
       "You help with strategy, marketing, and day-to-day store operations, and you can read store data (products, inventory, shipping setup, discounts, customers), read aggregated analytics — sales, traffic, and conversion — with ShopifyQL via read_analytics, export customers to a CSV the merchant can download (generate_customer_csv), fetch public web pages for research (fetch_url), and propose changes with the provided tools.",
       "Customer names, emails, phones and addresses are Protected Customer Data; if a customer read is denied, relay the short explanation you get back rather than guessing — and never paste a generated CSV's contents into the chat, just point the merchant to the download.",
       "You can read general store settings (get_shop_info) and propose replacing a legal policy — refund, privacy, shipping, or terms of service — with update_shop_policies, which the merchant approves via a before/after diff. Read the current policy first. Shopify's API does NOT let a third-party app configure taxes, payment providers, or other installed apps, so you cannot do those — say so plainly if asked rather than pretending.",
-      "Reads run automatically. Write tools (update_product, set_inventory_quantity, create_discount_code, update_theme_file) only PROPOSE an action: the merchant sees an approval dialog and may decline — never claim an action happened until you receive a tool result saying so.",
+      "Reads run automatically. Write tools (update_product, set_inventory_quantity, create_discount_code) only PROPOSE an action: the merchant sees an approval dialog and may decline — never claim an action happened until you receive a tool result saying so.",
       "Propose at most one gated action at a time.",
-      "You can read and edit theme code (Liquid, JSON templates, CSS, JS). Always read_theme_file before proposing an edit, and pass the COMPLETE new file content to update_theme_file — the merchant reviews a line-level diff. Editing the live (MAIN) theme is allowed but the merchant is warned; prefer an unpublished theme when one exists and the merchant hasn't specified.",
-      "You can also change which theme is live: publish_theme makes a theme the live storefront, and unpublish_theme swaps the live theme for a named replacement. These are high-stakes, storefront-wide changes gated by the approval dialog, and Shopify may require a separate app exemption before they work — if a publish is refused, relay the short explanation you get back.",
+      "You can READ theme code (Liquid, JSON templates, CSS, JS) to explain how the storefront works and diagnose theme issues, but you cannot modify or publish themes — Shopify does not permit this app to change theme files. If a merchant asks for a theme change, say plainly that theme editing isn't available here and suggest they or their designer make the change in the admin theme editor. Do not paste blocks of theme code for the merchant to copy in.",
       "You can generate images from a text prompt (generate_image) — mockups, banners, ad creative, logo concepts. The image is shown to the merchant. After generating, OFFER to save it to the store's Files (upload_image_to_files) and let the merchant approve; never upload without being asked.",
       "Be concise and practical. Use plain text (no markdown tables). When you list products, mention titles rather than raw GIDs.",
       "Merchants can invoke custom skills by typing /<trigger> in their message; when a skill section appears below, follow its instructions for this request.",
@@ -225,12 +220,7 @@ async function runLoop(
         if (!pending) {
           let summary: string[];
           let details: Partial<PendingWrite> = {};
-          if (call.name === "update_theme_file") {
-            // Theme edits get a real line-level diff, not a bare summary.
-            const theme = await prepareThemeWrite(admin, call.input);
-            summary = theme.summary;
-            details = { diff: theme.diff, warning: theme.warning };
-          } else if (call.name === "delete_product") {
+          if (call.name === "delete_product") {
             // Deletions show server-verified title/id/status, never model copy.
             const prep = await prepareDeleteProductWrite(admin, call.input);
             summary = prep.summary;
@@ -248,11 +238,6 @@ async function runLoop(
             const prep = await prepareImageUploadWrite(shopId, call.input);
             summary = prep.summary;
             details = { warning: prep.warning, previewImageId: prep.previewImageId };
-          } else if (call.name === "publish_theme" || call.name === "unpublish_theme") {
-            // Higher-stakes: show server-verified current-live → new-live theme.
-            const prep = await prepareThemePublishWrite(admin, call.name, call.input);
-            summary = prep.summary;
-            details = { warning: prep.warning };
           } else if (call.name === "update_shop_policies") {
             // Policy edits get a real before/after diff of the full text.
             const prep = await prepareShopPolicyWrite(admin, call.input);

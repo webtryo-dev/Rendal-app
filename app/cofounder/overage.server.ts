@@ -31,7 +31,11 @@ type ShopRow = {
  * Advance billing_period_start in whole 30-day steps when a period has
  * elapsed. The overage total lives on the usage_logs row keyed by
  * (shop_id, billing_period_start), so a fresh period starts at zero
- * automatically — advancing the anchor IS the reset.
+ * automatically — advancing the anchor resets it. The credit balance has no
+ * such keying, so it is reset here explicitly to the current plan's included
+ * allowance ("included usage resets every month" on the pricing page): a
+ * hard reset, not an accumulation — unused credits don't carry over, and a
+ * negative balance doesn't dampen the new period's grant.
  */
 export async function rolloverBillingPeriod<T extends ShopRow>(shop: T): Promise<T> {
   const elapsed = Date.now() - shop.billing_period_start.getTime();
@@ -40,7 +44,11 @@ export async function rolloverBillingPeriod<T extends ShopRow>(shop: T): Promise
   const newStart = new Date(shop.billing_period_start.getTime() + periods * PERIOD_MS);
   const updated = await prisma.shops.update({
     where: { id: shop.id },
-    data: { billing_period_start: newStart, updated_at: new Date() },
+    data: {
+      billing_period_start: newStart,
+      credit_balance: planConfig(shop.plan).includedCredits,
+      updated_at: new Date(),
+    },
   });
   return { ...shop, ...updated };
 }

@@ -1,10 +1,12 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { redirect, Form, useLoaderData } from "react-router";
-
-import { login } from "../../shopify.server";
+import { redirect } from "react-router";
 
 import styles from "./styles.module.css";
 
+// Public landing page. Installation and login always start from a
+// Shopify-owned surface (App Store listing or the admin); this page never
+// asks for a shop domain (App Store requirement 2.3.1) — it only forwards
+// Shopify-initiated loads that arrive with a shop param.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
@@ -12,43 +14,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  return null;
 };
 
 export default function App() {
-  const { showForm } = useLoaderData<typeof loader>();
-
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>Rendal — the AI co-founder for your Shopify store</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Rendal runs inside your Shopify admin. Install it from the Shopify App
+          Store, then open it from the <strong>Apps</strong> section of your
+          store's admin.
         </p>
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
-            </label>
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Store management by chat</strong>. Edit products, inventory,
+            discounts, and shipping by asking in plain language.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>You approve every change</strong>. Rendal proposes; nothing
+            is applied to your store until you confirm it.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Grows with your plan</strong>. Research, analytics, and
+            image generation unlock as you scale.
           </li>
         </ul>
       </div>

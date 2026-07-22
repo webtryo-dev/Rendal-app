@@ -15,6 +15,7 @@ import { recordUsage } from "../cofounder/billing.server";
 import { getOverageStatus, rolloverBillingPeriod } from "../cofounder/overage.server";
 import { isModelAllowed, requiredPlanForModelTier } from "../cofounder/capabilities.server";
 import { planConfig } from "../cofounder/pricing.server";
+import { mapShopifyPlanToKey } from "../plan-sync.server";
 import {
   createChat,
   deleteChat,
@@ -62,6 +63,9 @@ function sanitizeAttachments(raw: unknown): Attachment[] {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = await ensureShop(session.shop, admin);
+  // Set by the app root when Shopify's post-approval redirect carried a
+  // plan_handle — Chat is the landing page after choosing a plan.
+  const changedKey = mapShopifyPlanToKey(new URL(request.url).searchParams.get("plan_changed"));
   const [skills, chats] = await Promise.all([
     prisma.skills.findMany({
       where: { shop_id: shop.id },
@@ -78,7 +82,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     (m) => m.id,
   );
 
-  return { catalog: MODEL_CATALOG, skills, chats, plan: shop.plan, allowedModelIds };
+  return {
+    catalog: MODEL_CATALOG,
+    skills,
+    chats,
+    plan: shop.plan,
+    allowedModelIds,
+    planChangedLabel: changedKey ? planConfig(changedKey).label : null,
+  };
 };
 
 /** ChatTurnResult plus the chat the turn belongs to. */
@@ -427,7 +438,8 @@ function CsvDownload({
 // ---------------------------------------------------------------------------
 
 export default function CoFounderPage() {
-  const { catalog, skills, chats, allowedModelIds } = useLoaderData<typeof loader>();
+  const { catalog, skills, chats, allowedModelIds, planChangedLabel } =
+    useLoaderData<typeof loader>();
   const fetcher = useFetcher<ChatActionResult>();
   const shopify = useAppBridge();
 
@@ -454,6 +466,11 @@ export default function CoFounderPage() {
   // delete confirmation at any time.
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [confirmDeleteChatId, setConfirmDeleteChatId] = useState<string | null>(null);
+  // Which intent the in-flight fetcher call carries; only "chat" and
+  // "resolve_write" run an AI turn worth surfacing as live status.
+  const [pendingIntent, setPendingIntent] = useState<
+    "chat" | "resolve_write" | "load_chat" | "rename_chat" | "delete_chat" | null
+  >(null);
 
   const inputRef = useRef<(HTMLElement & { value: string }) | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -461,6 +478,12 @@ export default function CoFounderPage() {
   const lastHandledData = useRef<ChatActionResult | null>(null);
 
   const isBusy = fetcher.state !== "idle";
+  const isAiBusy = isBusy && (pendingIntent === "chat" || pendingIntent === "resolve_write");
+
+  // The recorded intent is consumed once its round-trip finishes.
+  useEffect(() => {
+    if (fetcher.state === "idle") setPendingIntent(null);
+  }, [fetcher.state]);
 
   const submitJson = (payload: Record<string, unknown>) => {
     fetcher.submit(payload as Parameters<typeof fetcher.submit>[0], {
@@ -512,10 +535,11 @@ export default function CoFounderPage() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, isBusy]);
 
-  // While a turn is in flight, poll the server for its live step and show it
-  // where the reply will land. Polling stops the instant the fetcher resolves.
+  // While an AI turn is in flight, poll the server for its live step and show
+  // it where the reply will land. Polling stops the instant the fetcher
+  // resolves. Sidebar operations (load/rename/delete) never trigger this.
   useEffect(() => {
-    if (!isBusy) {
+    if (!isAiBusy) {
       setLiveStep(null);
       return;
     }
@@ -536,7 +560,7 @@ export default function CoFounderPage() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [isBusy]);
+  }, [isAiBusy]);
 
   const handleComposerInput = () => {
     const value = inputRef.current?.value ?? "";
@@ -618,6 +642,7 @@ export default function CoFounderPage() {
       ...prev,
       { role: "user", text, ...(outgoing.length > 0 ? { attachments: outgoing } : {}) },
     ]);
+    setPendingIntent("chat");
     submitJson({ intent: "chat", chatId: activeChatId, modelId, text, attachments: outgoing });
     setAttachments([]);
   };
@@ -627,6 +652,7 @@ export default function CoFounderPage() {
     shopify.modal.hide(APPROVE_MODAL_ID);
     const write = pendingWrite;
     setPendingWrite(null);
+    setPendingIntent("resolve_write");
     submitJson({ intent: "resolve_write", chatId: activeChatId, modelId, pendingWrite: write, approved });
   };
 
@@ -634,6 +660,7 @@ export default function CoFounderPage() {
     if (isBusy || chatId === activeChatId) return;
     setNotice(null);
     setPendingWrite(null);
+    setPendingIntent("load_chat");
     submitJson({ intent: "load_chat", chatId });
   };
 
@@ -656,6 +683,7 @@ export default function CoFounderPage() {
     const title = raw.trim();
     const current = chats.find((c) => c.id === chatId)?.title ?? "";
     if (!title || title === current) return; // blank keeps the existing title
+    setPendingIntent("rename_chat");
     submitJson({ intent: "rename_chat", chatId, title });
   };
 
@@ -676,6 +704,7 @@ export default function CoFounderPage() {
       setPendingWrite(null);
       setNotice(null);
     }
+    setPendingIntent("delete_chat");
     submitJson({ intent: "delete_chat", chatId });
   };
 
@@ -684,6 +713,11 @@ export default function CoFounderPage() {
   return (
     <s-page heading="Rendal">
       <style>{`@keyframes cofounderPulse { 0%, 100% { opacity: 0.5 } 50% { opacity: 1 } }`}</style>
+      {planChangedLabel && (
+        <s-banner tone="success" dismissible>
+          {`You're now on the ${planChangedLabel} plan.`}
+        </s-banner>
+      )}
       <s-grid gridTemplateColumns="1fr 2.6fr" gap="base">
         {/* Sidebar */}
         <s-section>
@@ -858,7 +892,7 @@ export default function CoFounderPage() {
                     </s-stack>
                   );
                 })}
-                {isBusy && (
+                {isAiBusy && (
                   <s-stack direction="inline" gap="small-300" alignItems="center">
                     <s-spinner size="base" accessibilityLabel="Working"></s-spinner>
                     <span style={{ animation: "cofounderPulse 1.4s ease-in-out infinite" }}>

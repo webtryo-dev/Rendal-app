@@ -65,9 +65,6 @@ export const TOOL_STATUS_LABELS: Record<string, string> = {
   update_discount_code: "Proposing a discount update…",
   deactivate_discount_code: "Proposing a discount deactivation…",
   delete_discount_code: "Proposing a discount deletion…",
-  update_theme_file: "Proposing a theme code change…",
-  publish_theme: "Proposing to change the live theme…",
-  unpublish_theme: "Proposing to change the live theme…",
   generate_image: "Generating an image…",
   upload_image_to_files: "Proposing an image upload…",
 };

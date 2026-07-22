@@ -7,7 +7,10 @@ embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_draft_orders,write_draft_orders,read_discounts,write_discounts,read_price_rules,write_price_rules,read_shipping,write_shipping,read_themes,write_themes,read_fulfillments,write_fulfillments,read_customers,write_customers,read_content,write_content,read_locations,read_marketing_events,write_marketing_events,read_markets_home,read_reports,write_files,write_legal_policies"
+# write_themes was removed with the theme write tools (App Store requirement
+# 5.1.1 — Theme API modification needs an approved exemption). read_themes
+# stays for the read-only theme inspection tools.
+scopes = "read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_draft_orders,write_draft_orders,read_discounts,write_discounts,read_price_rules,write_price_rules,read_shipping,write_shipping,read_themes,read_fulfillments,write_fulfillments,read_customers,write_customers,read_content,write_content,read_locations,read_marketing_events,write_marketing_events,read_markets_home,read_reports,write_files,write_legal_policies"
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"

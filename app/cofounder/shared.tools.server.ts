@@ -26,19 +26,6 @@ export interface ToolExecution {
   isError: boolean;
 }
 
-/**
- * Publishing a theme needs a manual Shopify per-app exemption on top of the
- * write_themes scope — not fixable in code. When themePublish is refused for
- * that reason (thrown ACCESS_DENIED or a userError), the merchant gets this
- * one-liner instead of a raw error, mirroring the Protected Customer Data path.
- */
-export const THEME_EXEMPTION_MESSAGE =
-  "Publishing themes requires a one-time Shopify API exemption for this app, which hasn't been granted yet — so the live theme wasn't changed. You can request it in the Shopify Partner Dashboard.";
-
-export function isThemeExemptionError(text: string): boolean {
-  return /exemption|access denied|unauthorized|not authorized|not approved|write_themes/i.test(text);
-}
-
 /** Shown when shopPolicyUpdate is refused for lack of the write_legal_policies scope. */
 export const POLICY_SCOPE_MESSAGE =
   "Updating store policies needs the write_legal_policies permission, which hasn't been granted to this app yet. Re-installing the app to accept the updated permissions will enable it.";
@@ -52,9 +39,6 @@ export const POLICY_SCOPE_MESSAGE =
  */
 export function friendlyToolError(name: string, error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  if ((name === "publish_theme" || name === "unpublish_theme") && isThemeExemptionError(raw)) {
-    return THEME_EXEMPTION_MESSAGE;
-  }
   if (
     name === "update_shop_policies" &&
     /write_legal_policies|access denied|unauthorized|not approved/i.test(raw)

@@ -31,12 +31,7 @@ import {
   executeDiscountsWriteTool,
   summarizeDiscountsWrite,
 } from "./discounts.tools.server";
-import {
-  THEME_TOOL_DEFS,
-  THEME_WRITE_TOOL_NAMES,
-  executeThemeReadTool,
-  executeThemeWriteTool,
-} from "./theme.tools.server";
+import { THEME_TOOL_DEFS, executeThemeReadTool } from "./theme.tools.server";
 import {
   ANALYTICS_TOOL_DEFS,
   ANALYTICS_WRITE_TOOL_NAMES,
@@ -60,7 +55,6 @@ import { WEB_TOOL_DEFS, executeWebReadTool } from "./web.tools.server";
 export type { AdminContext, NeutralToolDef, ToolExecution } from "./shared.tools.server";
 export { prepareDeleteProductWrite } from "./products.tools.server";
 export { prepareDiscountStatusWrite } from "./discounts.tools.server";
-export { prepareThemePublishWrite, prepareThemeWrite } from "./theme.tools.server";
 export { prepareShopPolicyWrite } from "./analytics.tools.server";
 export { generateCustomerCsv, type CustomerCsvResult } from "./customers.tools.server";
 export {
@@ -108,9 +102,6 @@ const TOOL_ORDER = [
   "list_themes",
   "list_theme_files",
   "read_theme_file",
-  "update_theme_file",
-  "publish_theme",
-  "unpublish_theme",
   "create_discount_code",
   "create_bxgy_discount",
   "create_free_shipping_discount",
@@ -119,6 +110,17 @@ const TOOL_ORDER = [
   "delete_discount_code",
   "generate_image",
   "upload_image_to_files",
+  // Variant/option management (added after the pre-split snapshot; appended so
+  // the original serialized tool-list prefix stays byte-identical).
+  "create_product_variants",
+  "update_variant",
+  "delete_variant",
+  "create_product_options",
+  "update_product_option",
+  "attach_product_images",
+  "remove_product_image",
+  "delete_shipping_zone",
+  "delete_shipping_rate",
 ];
 
 export const TOOL_DEFS: NeutralToolDef[] = TOOL_ORDER.map((name) => {
@@ -131,7 +133,6 @@ export const WRITE_TOOL_NAMES = new Set([
   ...PRODUCTS_WRITE_TOOL_NAMES,
   ...SHIPPING_WRITE_TOOL_NAMES,
   ...DISCOUNTS_WRITE_TOOL_NAMES,
-  ...THEME_WRITE_TOOL_NAMES,
   ...ANALYTICS_WRITE_TOOL_NAMES,
   ...CUSTOMERS_WRITE_TOOL_NAMES,
   ...IMAGE_WRITE_TOOL_NAMES,
@@ -166,10 +167,9 @@ export async function executeWriteTool(
 ): Promise<ToolExecution> {
   try {
     const result =
-      (await executeProductsWriteTool(admin, name, input)) ??
+      (await executeProductsWriteTool(admin, name, input, shopId)) ??
       (await executeShippingWriteTool(admin, name, input)) ??
       (await executeDiscountsWriteTool(admin, name, input)) ??
-      (await executeThemeWriteTool(admin, name, input)) ??
       (await executeAnalyticsWriteTool(admin, name, input)) ??
       (await executeImageWriteTool(admin, name, input, shopId));
     return result ?? { content: `Unknown write tool: ${name}`, isError: true };
