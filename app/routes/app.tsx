@@ -20,6 +20,7 @@ export default function App() {
       <s-app-nav>
         <s-link href="/app/cofounder">Chat</s-link>
         <s-link href="/app/skills">Skills</s-link>
+        <s-link href="/app/usage">Usage</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

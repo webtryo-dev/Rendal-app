@@ -1,16 +1,28 @@
 import prisma from "../db.server";
+import type { AdminContext } from "./tools.server";
+import { reportOverage } from "./overage.server";
+import { REAL_COST_CREDIT_RATE } from "./pricing.server";
 import type { ProviderId, UsageEntry } from "./types";
 
 // ---------------------------------------------------------------------------
-// Credits: $20 of subscription price = 1,000,000 credits (5x markup), so
-// credits_to_deduct = real_api_cost_usd * 250,000.
-// Prices are USD per 1M tokens (fetched from provider pricing pages 2026-07-14;
-// Gemini 3.1 Pro uses its <=200k-token tier).
+// Credits deducted = real_api_cost_usd * REAL_COST_CREDIT_RATE (250,000 —
+// the 50,000 credits/$1 retail rate with the 5x markup applied; see
+// pricing.server.ts). Prices are USD per 1M tokens (fetched from provider
+// pricing pages 2026-07-14; Gemini 3.1 Pro uses its <=200k-token tier).
 // ---------------------------------------------------------------------------
 
-const CREDITS_PER_USD = 250_000;
+const CREDITS_PER_USD = REAL_COST_CREDIT_RATE;
 
-const MODEL_PRICES: Record<string, { inputPerMTok: number; outputPerMTok: number }> = {
+interface ModelPrice {
+  inputPerMTok: number;
+  outputPerMTok: number;
+  /** Image-generation rates (gpt-image-2), USD per 1M tokens. */
+  imageInputPerMTok?: number;
+  cachedImageInputPerMTok?: number;
+  imageOutputPerMTok?: number;
+}
+
+const MODEL_PRICES: Record<string, ModelPrice> = {
   "claude-sonnet-5": { inputPerMTok: 3, outputPerMTok: 15 },
   "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25 },
   "claude-fable-5": { inputPerMTok: 10, outputPerMTok: 50 },
@@ -18,6 +30,15 @@ const MODEL_PRICES: Record<string, { inputPerMTok: number; outputPerMTok: number
   "gpt-5.6-sol": { inputPerMTok: 5, outputPerMTok: 30 },
   "gemini-3.5-flash": { inputPerMTok: 1.5, outputPerMTok: 9 },
   "gemini-3.1-pro-preview": { inputPerMTok: 2, outputPerMTok: 12 },
+  // gpt-image-2 (Images API). Verified against OpenAI pricing 2026-07-20:
+  // text input $5, image input $8, cached image input $2, image output $30 / 1M.
+  "gpt-image-2": {
+    inputPerMTok: 5,
+    outputPerMTok: 0,
+    imageInputPerMTok: 8,
+    cachedImageInputPerMTok: 2,
+    imageOutputPerMTok: 30,
+  },
 };
 
 /** DB check constraint vocabulary for chat_messages/credit_ledger. */
@@ -31,7 +52,10 @@ export function costUsd(entry: UsageEntry): number {
   const price = MODEL_PRICES[entry.modelId] ?? { inputPerMTok: 10, outputPerMTok: 50 };
   return (
     (entry.inputTokens / 1_000_000) * price.inputPerMTok +
-    (entry.outputTokens / 1_000_000) * price.outputPerMTok
+    (entry.outputTokens / 1_000_000) * price.outputPerMTok +
+    ((entry.imageInputTokens ?? 0) / 1_000_000) * (price.imageInputPerMTok ?? 0) +
+    ((entry.cachedImageInputTokens ?? 0) / 1_000_000) * (price.cachedImageInputPerMTok ?? 0) +
+    ((entry.imageOutputTokens ?? 0) / 1_000_000) * (price.imageOutputPerMTok ?? 0)
   );
 }
 
@@ -41,9 +65,10 @@ export function costUsd(entry: UsageEntry): number {
  * every model call the turn made.
  */
 export async function recordUsage(
-  shop: { id: string; billing_period_start: Date },
+  shop: { id: string; plan: string; credit_balance: bigint; billing_period_start: Date },
   entries: UsageEntry[],
   chatMessageId: string | null,
+  admin?: AdminContext,
 ): Promise<void> {
   if (entries.length === 0) return;
 
@@ -61,8 +86,11 @@ export async function recordUsage(
         chat_message_id: chatMessageId,
         model_provider: dbProvider(entry.provider),
         model_name: entry.modelId,
-        input_tokens: entry.inputTokens,
-        output_tokens: entry.outputTokens,
+        // Image-generation token categories are folded into the audit columns
+        // (their distinct rates were already applied in costUsd above).
+        input_tokens:
+          entry.inputTokens + (entry.imageInputTokens ?? 0) + (entry.cachedImageInputTokens ?? 0),
+        output_tokens: entry.outputTokens + (entry.imageOutputTokens ?? 0),
         real_cost_usd: cost.toFixed(6),
         credits_deducted: credits,
       },
@@ -95,4 +123,16 @@ export async function recordUsage(
       updated_at: new Date(),
     },
   });
+
+  // Overage: the portion of this turn's credits not covered by the shop's
+  // remaining balance is billed through the Partner Dashboard meter (App
+  // Events API), ceiling-checked inside reportOverage.
+  if (admin) {
+    const balanceBefore = shop.credit_balance;
+    const covered = balanceBefore > 0n ? (balanceBefore < totalCredits ? balanceBefore : totalCredits) : 0n;
+    const overageCredits = totalCredits - covered;
+    if (overageCredits > 0n) {
+      await reportOverage(admin, shop, overageCredits);
+    }
+  }
 }

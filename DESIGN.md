@@ -94,10 +94,21 @@ Delete confirms via modal.
 
 ## Billing screen (`/app/billing`, Phase 5)
 
-Plan cards for Starter $19 / Growth $49 / Scale $149 / Founder $299 with feature
-lists (model tiers unlocked), current-plan badge, and subscribe/upgrade actions via
-Shopify AppSubscription. Usage counter (messages this billing period) shown on this
-page.
+Plan cards with feature lists (model tiers unlocked), current-plan badge, and
+subscribe/upgrade actions. Prices and included credits (retail rate 50,000
+credits/$1):
+
+| Plan    | Price    | Included credits |
+|---------|----------|------------------|
+| Starter | $19.99   | 999,500          |
+| Growth  | $49.99   | 2,499,500        |
+| Scale   | $149.99  | 7,499,500        |
+| Founder | $299.99  | 14,999,500       |
+
+Billing runs on **Shopify App Pricing** (App Events API + a Partner Dashboard
+meter `extra_credit_usage`), not the older AppSubscription/Managed Pricing flow.
+There is no native spending cap, so the overage ceiling is enforced in-app.
+Usage counter (messages this billing period) shown on this page.
 
 ## Navigation
 

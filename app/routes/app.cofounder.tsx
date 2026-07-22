@@ -12,6 +12,9 @@ import prisma from "../db.server";
 import { ensureShop } from "../shop.server";
 import { resolveWrite, runChatTurn } from "../cofounder.server";
 import { recordUsage } from "../cofounder/billing.server";
+import { getOverageStatus, rolloverBillingPeriod } from "../cofounder/overage.server";
+import { isModelAllowed, requiredPlanForModelTier } from "../cofounder/capabilities.server";
+import { planConfig } from "../cofounder/pricing.server";
 import {
   createChat,
   getShopChat,
@@ -21,6 +24,7 @@ import {
 } from "../cofounder/chats.server";
 import {
   MODEL_CATALOG,
+  TOOL_STATUS_LABELS,
   type Attachment,
   type ChatTurnResult,
   type NeutralMessage,
@@ -65,21 +69,82 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     listChats(shop.id),
   ]);
 
-  return { catalog: MODEL_CATALOG, skills, chats };
+  // The model switcher lists only models the shop's plan allows (a UI
+  // convenience — the server action is the real gate). Computed here so the
+  // client never imports the server-only capability map.
+  const allowedModelIds = MODEL_CATALOG.filter((m) => isModelAllowed(shop.plan, m.tier)).map(
+    (m) => m.id,
+  );
+
+  return { catalog: MODEL_CATALOG, skills, chats, plan: shop.plan, allowedModelIds };
 };
 
 /** ChatTurnResult plus the chat the turn belongs to. */
-type ChatActionResult = Omit<ChatTurnResult, "usage"> & { chatId: string | null };
+type ChatActionResult = Omit<ChatTurnResult, "usage" | "status"> & {
+  status: ChatTurnResult["status"] | "limit_reached" | "plan_upgrade_required";
+  chatId: string | null;
+  /** Present when status is "limit_reached". */
+  limit?: {
+    planLabel: string;
+    ceilingUsd: number;
+    resumesAt: string;
+  };
+  /** Present when status is "plan_upgrade_required" (model above the plan's tier). */
+  upgrade?: {
+    modelLabel: string;
+    /** Human label of the lowest plan that unlocks the model. */
+    requiredPlan: string;
+  };
+};
 
 export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActionResult> => {
   const { admin, session } = await authenticate.admin(request);
   const body = await request.json();
-  const shop = await ensureShop(session.shop, admin);
+  let shop = await ensureShop(session.shop, admin);
+  // Rolling 30-day period: advancing the anchor resets the overage total.
+  shop = await rolloverBillingPeriod(shop);
 
   if (body.intent === "load_chat") {
     const chat = await getShopChat(shop.id, body.chatId);
     if (!chat) return { status: "error", messages: [], chatId: null, errorMessage: "Chat not found." };
     return { status: "done", messages: await loadChatMessages(chat.id), chatId: chat.id };
+  }
+
+  // Billable intents are blocked once the shop has hit its overage ceiling
+  // for this billing period (Shopify App Pricing has no native cap — this
+  // in-app check is the only thing preventing runaway billing). Non-billable
+  // intents (load_chat) stay available.
+  if (body.intent === "chat" || body.intent === "resolve_write") {
+    const overage = await getOverageStatus(shop);
+    if (overage.blocked) {
+      return {
+        status: "limit_reached",
+        messages: [],
+        chatId: (body.chatId as string) ?? null,
+        limit: {
+          planLabel: overage.planLabel,
+          ceilingUsd: overage.ceilingUsd,
+          resumesAt: overage.resumesAt.toISOString(),
+        },
+      };
+    }
+
+    // Model-tier gate. The client only offers plan-allowed models, but a client
+    // can send any modelId, so the server is the real check: if the requested
+    // model is above the shop's plan, don't call it — return an upgrade prompt
+    // rendered as a banner (same pattern as limit_reached).
+    const requestedModel = MODEL_CATALOG.find((m) => m.id === body.modelId);
+    if (requestedModel && !isModelAllowed(shop.plan, requestedModel.tier)) {
+      return {
+        status: "plan_upgrade_required",
+        messages: [],
+        chatId: (body.chatId as string) ?? null,
+        upgrade: {
+          modelLabel: requestedModel.label,
+          requiredPlan: planConfig(requiredPlanForModelTier(requestedModel.tier)).label,
+        },
+      };
+    }
   }
 
   if (body.intent === "chat") {
@@ -103,10 +168,10 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActio
     await persistMessages(chat.id, [userMessage]);
     const input = [...history, userMessage];
 
-    const result = await runChatTurn(admin, session.shop, body.modelId, input);
+    const result = await runChatTurn(admin, session.shop, shop.id, shop.plan, body.modelId, input);
     const newMessages = result.messages.slice(input.length);
     const lastAssistantId = await persistMessages(chat.id, newMessages);
-    await recordUsage(shop, result.usage, lastAssistantId);
+    await recordUsage(shop, result.usage, lastAssistantId, admin);
 
     return { ...result, usage: undefined, chatId: chat.id } as unknown as ChatActionResult;
   }
@@ -119,6 +184,8 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActio
     const result = await resolveWrite(
       admin,
       session.shop,
+      shop.id,
+      shop.plan,
       body.modelId,
       history,
       body.pendingWrite as PendingWrite,
@@ -126,7 +193,7 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActio
     );
     const newMessages = result.messages.slice(history.length);
     const lastAssistantId = await persistMessages(chat.id, newMessages);
-    await recordUsage(shop, result.usage, lastAssistantId);
+    await recordUsage(shop, result.usage, lastAssistantId, admin);
 
     return { ...result, usage: undefined, chatId: chat.id } as unknown as ChatActionResult;
   }
@@ -138,29 +205,18 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActio
 // Display
 // ---------------------------------------------------------------------------
 
-const TOOL_STATUS_LABELS: Record<string, string> = {
-  search_products: "Searching products…",
-  get_product: "Reading product details…",
-  get_inventory_levels: "Checking inventory levels…",
-  get_shipping_setup: "Reading shipping setup…",
-  list_discounts: "Reading discounts…",
-  list_themes: "Reading themes…",
-  list_theme_files: "Listing theme files…",
-  read_theme_file: "Reading theme code…",
-  update_product: "Proposing a product update…",
-  set_inventory_quantity: "Proposing an inventory change…",
-  create_discount_code: "Proposing a discount code…",
-  update_theme_file: "Proposing a theme code change…",
-};
-
 const DIFF_TONES = { add: "success", del: "critical", ctx: "subdued" } as const;
 
 interface DisplayItem {
   key: string;
-  kind: "merchant" | "ai" | "status";
+  kind: "merchant" | "ai" | "status" | "image" | "download";
   text: string;
   badge?: string;
   attachments?: { name: string; mimeType: string }[];
+  /** Set for kind "image": a generated_images id to render inline. */
+  imageId?: string;
+  /** Set for kind "download": a customer CSV export the merchant can download. */
+  download?: { exportId: string; filename: string; rowCount: number };
 }
 
 function toDisplayItems(messages: NeutralMessage[]): DisplayItem[] {
@@ -177,7 +233,43 @@ function toDisplayItems(messages: NeutralMessage[]): DisplayItem[] {
       });
       return;
     }
-    if (message.role === "tool") return;
+    if (message.role === "tool") {
+      // A generated image is surfaced as an inline preview; other tool results
+      // stay behind the scenes.
+      if (message.toolName === "generate_image" && !message.isError) {
+        try {
+          const parsed = JSON.parse(message.content) as { imageId?: string };
+          if (parsed.imageId) {
+            items.push({ key: `${mi}-image`, kind: "image", text: "", imageId: parsed.imageId });
+          }
+        } catch {
+          // Malformed tool result — nothing to render.
+        }
+      } else if (message.toolName === "generate_customer_csv" && !message.isError) {
+        try {
+          const parsed = JSON.parse(message.content) as {
+            exportId?: string;
+            filename?: string;
+            rowCount?: number;
+          };
+          if (parsed.exportId && parsed.filename) {
+            items.push({
+              key: `${mi}-csv`,
+              kind: "download",
+              text: "",
+              download: {
+                exportId: parsed.exportId,
+                filename: parsed.filename,
+                rowCount: parsed.rowCount ?? 0,
+              },
+            });
+          }
+        } catch {
+          // Malformed tool result — nothing to render.
+        }
+      }
+      return;
+    }
     if (
       Array.isArray(message.raw) &&
       message.raw.some((block) => (block as { type?: string }).type === "fallback")
@@ -202,20 +294,139 @@ function toDisplayItems(messages: NeutralMessage[]): DisplayItem[] {
   return items;
 }
 
+/**
+ * Renders a server-stored generated image. The bytes are served by the
+ * /app/images/:id resource route, which requires the embedded session token —
+ * so we fetch through the App Bridge-patched fetch and hand the browser an
+ * object URL rather than pointing an <img> straight at the (unauthenticated) URL.
+ */
+function GeneratedImage({ imageId, maxHeight }: { imageId: string; maxHeight: number }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    (async () => {
+      try {
+        const res = await fetch(`/app/images/${imageId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [imageId]);
+
+  if (failed) return <s-text color="subdued">Image preview unavailable.</s-text>;
+  if (!url) {
+    return <s-spinner size="base" accessibilityLabel="Loading image"></s-spinner>;
+  }
+  return (
+    <img
+      src={url}
+      alt="Generated artwork"
+      style={{ maxWidth: "100%", maxHeight, borderRadius: 8, display: "block" }}
+    />
+  );
+}
+
+/**
+ * A download control for a generated customer CSV. Like GeneratedImage, the
+ * file is fetched through the App Bridge-authenticated fetch (an <a href> to
+ * the resource route would lack the session token); we hand the browser an
+ * object URL and trigger a normal file download.
+ */
+function CsvDownload({
+  exportId,
+  filename,
+  rowCount,
+}: {
+  exportId: string;
+  filename: string;
+  rowCount: number;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const download = async () => {
+    setBusy(true);
+    setFailed(false);
+    try {
+      const res = await fetch(`/app/exports/${exportId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base">
+      <s-stack direction="block" gap="small-300">
+        <s-text>{filename}</s-text>
+        <s-text color="subdued">
+          {`${rowCount} customer${rowCount === 1 ? "" : "s"} · available to download for 24 hours`}
+        </s-text>
+        {failed && (
+          <s-text tone="critical">Download failed — the file may have expired. Ask to export again.</s-text>
+        )}
+        <s-button
+          variant="secondary"
+          icon="download"
+          onClick={download}
+          {...(busy ? { loading: true } : {})}
+        >
+          Download CSV
+        </s-button>
+      </s-stack>
+    </s-box>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function CoFounderPage() {
-  const { catalog, skills, chats } = useLoaderData<typeof loader>();
+  const { catalog, skills, chats, allowedModelIds } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<ChatActionResult>();
   const shopify = useAppBridge();
+
+  // Models the shop's plan unlocks — the switcher lists only these.
+  const allowedModelIdSet = new Set(allowedModelIds);
+  const availableModels = catalog.filter((m) => allowedModelIdSet.has(m.id));
 
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<NeutralMessage[]>([]);
   const [pendingWrite, setPendingWrite] = useState<PendingWrite | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [modelId, setModelId] = useState(catalog.find((m) => m.enabled)?.id ?? "");
+  const [limitInfo, setLimitInfo] = useState<NonNullable<ChatActionResult["limit"]> | null>(null);
+  const [upgradeInfo, setUpgradeInfo] = useState<NonNullable<ChatActionResult["upgrade"]> | null>(
+    null,
+  );
+  // Live per-step status of the running turn, polled from the server.
+  const [liveStep, setLiveStep] = useState<string | null>(null);
+  const [modelId, setModelId] = useState(
+    availableModels.find((m) => m.enabled)?.id ?? availableModels[0]?.id ?? "",
+  );
   const [skillQuery, setSkillQuery] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
 
@@ -239,6 +450,20 @@ export default function CoFounderPage() {
     if (!data || fetcher.state !== "idle" || data === lastHandledData.current) return;
     lastHandledData.current = data;
 
+    if (data.status === "limit_reached" || data.status === "plan_upgrade_required") {
+      if (data.status === "limit_reached") setLimitInfo(data.limit ?? null);
+      else setUpgradeInfo(data.upgrade ?? null);
+      // The blocked message was never sent — remove the optimistic bubble.
+      setMessages((prev) =>
+        prev.length > 0 && prev[prev.length - 1].role === "user" ? prev.slice(0, -1) : prev,
+      );
+      return;
+    }
+    if (data.status === "done" || data.status === "pending_write") {
+      setLimitInfo(null);
+      setUpgradeInfo(null);
+    }
+
     if (data.chatId) setActiveChatId(data.chatId);
     if (data.messages.length > 0 || data.status === "done") setMessages(data.messages);
     setPendingWrite(data.status === "pending_write" ? (data.pendingWrite ?? null) : null);
@@ -256,6 +481,32 @@ export default function CoFounderPage() {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, isBusy]);
+
+  // While a turn is in flight, poll the server for its live step and show it
+  // where the reply will land. Polling stops the instant the fetcher resolves.
+  useEffect(() => {
+    if (!isBusy) {
+      setLiveStep(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch("/app/cofounder-step");
+        if (!res.ok) return;
+        const data = (await res.json()) as { currentStep: string | null };
+        if (!cancelled) setLiveStep(data.currentStep);
+      } catch {
+        // Transient poll failure — keep the last known step, try again next tick.
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 750);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isBusy]);
 
   const handleComposerInput = () => {
     const value = inputRef.current?.value ?? "";
@@ -368,6 +619,7 @@ export default function CoFounderPage() {
 
   return (
     <s-page heading="Rendal">
+      <style>{`@keyframes cofounderPulse { 0%, 100% { opacity: 0.5 } 50% { opacity: 1 } }`}</style>
       <s-grid gridTemplateColumns="1fr 2.6fr" gap="base">
         {/* Sidebar */}
         <s-section>
@@ -455,6 +707,26 @@ export default function CoFounderPage() {
                       </div>
                     );
                   }
+                  if (item.kind === "image" && item.imageId) {
+                    return (
+                      <div key={item.key} style={{ display: "flex", justifyContent: "flex-start" }}>
+                        <div style={{ maxWidth: "75%" }}>
+                          <s-box padding="base" borderWidth="base" borderRadius="base">
+                            <GeneratedImage imageId={item.imageId} maxHeight={360} />
+                          </s-box>
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (item.kind === "download" && item.download) {
+                    return (
+                      <div key={item.key} style={{ display: "flex", justifyContent: "flex-start" }}>
+                        <div style={{ maxWidth: "75%" }}>
+                          <CsvDownload {...item.download} />
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <s-stack key={item.key} direction="inline" gap="small-300" alignItems="center">
                       <s-icon type="wrench" size="small" color="subdued"></s-icon>
@@ -464,12 +736,30 @@ export default function CoFounderPage() {
                 })}
                 {isBusy && (
                   <s-stack direction="inline" gap="small-300" alignItems="center">
-                    <s-spinner size="base" accessibilityLabel="Thinking"></s-spinner>
-                    <s-text color="subdued">Thinking…</s-text>
+                    <s-spinner size="base" accessibilityLabel="Working"></s-spinner>
+                    <span style={{ animation: "cofounderPulse 1.4s ease-in-out infinite" }}>
+                      <s-text color="subdued">{liveStep ?? "Thinking…"}</s-text>
+                    </span>
                   </s-stack>
                 )}
               </s-stack>
             </div>
+
+            {limitInfo && (
+              <s-banner heading="Usage limit reached" tone="critical">
+                <s-paragraph>
+                  {`You've used your included credits plus the $${limitInfo.ceilingUsd} extra-usage allowance on the ${limitInfo.planLabel} plan for this billing period. Standard credits resume ${new Date(limitInfo.resumesAt).toLocaleDateString(undefined, { dateStyle: "medium" })}. Upgrading your plan unlocks more headroom right away — your chat history and settings remain fully available.`}
+                </s-paragraph>
+              </s-banner>
+            )}
+
+            {upgradeInfo && (
+              <s-banner heading="Upgrade to use this model" tone="info" dismissible>
+                <s-paragraph>
+                  {`${upgradeInfo.modelLabel} is available on the ${upgradeInfo.requiredPlan} plan and above — upgrade to use it. Pick a model included in your current plan to keep chatting.`}
+                </s-paragraph>
+              </s-banner>
+            )}
 
             {notice && (
               <s-banner tone="warning" dismissible>
@@ -559,7 +849,7 @@ export default function CoFounderPage() {
                     setModelId((event.target as HTMLSelectElement).value)
                   }
                 >
-                  {catalog.map((model) => (
+                  {availableModels.map((model) => (
                     <s-option key={model.id} value={model.id} disabled={!model.enabled}>
                       {`${model.providerLabel} — ${model.label}${model.enabled ? "" : " (soon)"}`}
                     </s-option>
@@ -603,6 +893,11 @@ export default function CoFounderPage() {
               ))}
             </s-stack>
           </s-box>
+          {pendingWrite?.previewImageId && (
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <GeneratedImage imageId={pendingWrite.previewImageId} maxHeight={320} />
+            </s-box>
+          )}
           {pendingWrite?.diff && (
             <s-box padding="base" borderWidth="base" borderRadius="base">
               <div style={{ maxHeight: "40vh", overflowY: "auto" }}>

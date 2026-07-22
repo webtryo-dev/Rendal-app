@@ -31,6 +31,47 @@ export function modelLabel(apiModelId: string): string {
   return match ? match.label : apiModelId;
 }
 
+/**
+ * Short, merchant-facing status labels per tool, shown while a turn is in
+ * progress. Shared by the chat UI (rendering past tool steps) and the server
+ * orchestrator (writing the live current_step of the running turn). Kept here
+ * — a provider-neutral, client-and-server-safe module — so there is one map.
+ */
+export const TOOL_STATUS_LABELS: Record<string, string> = {
+  fetch_url: "Reading a web page…",
+  search_products: "Searching products…",
+  get_product: "Reading product details…",
+  get_inventory_levels: "Checking inventory levels…",
+  get_shipping_setup: "Reading shipping setup…",
+  list_discounts: "Reading discounts…",
+  read_analytics: "Reading store analytics…",
+  list_customers: "Reading customers…",
+  generate_customer_csv: "Preparing a customer export…",
+  get_shop_info: "Reading store settings…",
+  update_shop_policies: "Proposing a policy update…",
+  list_themes: "Reading themes…",
+  list_theme_files: "Listing theme files…",
+  read_theme_file: "Reading theme code…",
+  create_product: "Proposing a new product…",
+  update_product: "Proposing a product update…",
+  delete_product: "Proposing a product deletion…",
+  set_inventory_quantity: "Proposing an inventory change…",
+  create_shipping_zone: "Proposing a shipping zone…",
+  update_shipping_zone: "Proposing a shipping zone update…",
+  set_shipping_rate: "Proposing a shipping rate…",
+  create_discount_code: "Proposing a discount code…",
+  create_bxgy_discount: "Proposing a buy-X-get-Y discount…",
+  create_free_shipping_discount: "Proposing a free-shipping discount…",
+  update_discount_code: "Proposing a discount update…",
+  deactivate_discount_code: "Proposing a discount deactivation…",
+  delete_discount_code: "Proposing a discount deletion…",
+  update_theme_file: "Proposing a theme code change…",
+  publish_theme: "Proposing to change the live theme…",
+  unpublish_theme: "Proposing to change the live theme…",
+  generate_image: "Generating an image…",
+  upload_image_to_files: "Proposing an image upload…",
+};
+
 export interface NeutralToolCall {
   /** Neutral id — the provider's call id when it supplied one. */
   id: string;
@@ -98,6 +139,12 @@ export interface PendingWrite {
   diff?: DiffLine[];
   /** Extra warning shown prominently in the approval modal (e.g. live theme). */
   warning?: string;
+  /**
+   * A generated_images id to render as an inline preview in the approval modal
+   * (upload_image_to_files) — the merchant sees the actual image before it is
+   * saved to Files.
+   */
+  previewImageId?: string;
 }
 
 export interface UsageEntry {
@@ -105,6 +152,13 @@ export interface UsageEntry {
   modelId: string;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * gpt-image-2 image-generation token breakdown, billed at their own rates
+   * (see MODEL_PRICES). Absent for ordinary chat calls.
+   */
+  imageInputTokens?: number;
+  cachedImageInputTokens?: number;
+  imageOutputTokens?: number;
 }
 
 export interface ChatTurnResult {

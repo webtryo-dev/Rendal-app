@@ -101,6 +101,39 @@ model credit_ledger {
   @@index([shop_id], map: "idx_credit_ledger_shop_id")
 }
 
+/// Generated images (gpt-image-2) held server-side so they can be previewed
+/// in chat and, on merchant approval, uploaded to the store's Files. Bytes are
+/// stored base64 in `data` and served only to the owning shop.
+model generated_images {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_id    String   @db.Uuid
+  prompt     String
+  mime_type  String
+  data       String
+  width      Int?
+  height     Int?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  shops      shops    @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([shop_id], map: "idx_generated_images_shop_id")
+}
+
+/// Customer CSV exports (Phase 8). Sensitive PII — held only long enough for
+/// the merchant to download, then expired/deleted. `expires_at` is enforced
+/// lazily on access and on each new export. Never logged.
+model customer_exports {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_id    String   @db.Uuid
+  filename   String
+  data       String
+  row_count  Int      @default(0)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  expires_at DateTime @db.Timestamptz(6)
+  shops      shops    @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([shop_id], map: "idx_customer_exports_shop_id")
+}
+
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model mcp_connections {
   id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -126,8 +159,14 @@ model shops {
   created_at           DateTime          @default(now()) @db.Timestamptz(6)
   updated_at           DateTime          @default(now()) @db.Timestamptz(6)
   email                String?
+  // Live status of the shop's in-progress chat turn (e.g. "Thinking…",
+  // "Searching products…"), polled by the chat UI. Null when no turn is
+  // running. One turn per shop at a time (the composer blocks while busy).
+  current_step         String?
   chats                chats[]
   credit_ledger        credit_ledger[]
+  customer_exports     customer_exports[]
+  generated_images     generated_images[]
   mcp_connections      mcp_connections[]
   skills               skills[]
   usage_logs           usage_logs[]
@@ -151,15 +190,16 @@ model skills {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model usage_logs {
-  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shop_id              String   @db.Uuid
-  billing_period_start DateTime @db.Timestamptz(6)
-  total_credits_used   BigInt   @default(0)
-  total_real_cost_usd  Decimal  @default(0) @db.Decimal(12, 6)
-  message_count        Int      @default(0)
-  created_at           DateTime @default(now()) @db.Timestamptz(6)
-  updated_at           DateTime @default(now()) @db.Timestamptz(6)
-  shops                shops    @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shop_id                String   @db.Uuid
+  billing_period_start   DateTime @db.Timestamptz(6)
+  total_credits_used     BigInt   @default(0)
+  total_real_cost_usd    Decimal  @default(0) @db.Decimal(12, 6)
+  message_count          Int      @default(0)
+  created_at             DateTime @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime @default(now()) @db.Timestamptz(6)
+  overage_dollars_billed Decimal  @default(0) @db.Decimal(12, 6)
+  shops                  shops    @relation(fields: [shop_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([shop_id, billing_period_start])
 }
