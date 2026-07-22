@@ -44,9 +44,24 @@ api_version = "2026-10"
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+  # Mandatory compliance topics — handled by
+  # /app/routes/webhooks.customers.data_request.tsx,
+  # /app/routes/webhooks.customers.redact.tsx,
+  # /app/routes/webhooks.shop.redact.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = [ "shop/redact" ]
+
 [auth]
-redirect_urls = [ "https://app.rendal.io/api/auth" ]
+redirect_urls = [ "https://app.rendal.io/auth/callback" ]
 
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = true
