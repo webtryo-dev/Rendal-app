@@ -140,6 +140,7 @@ model mcp_connections {
   shop_id              String   @db.Uuid
   name                 String
   server_url           String
+  // UNBUILT: no code writes this column yet (the automation-email feature was rolled back). Whoever builds it MUST encrypt the token before writing it here — the name promises encryption at rest that does not exist anywhere yet; do not store plaintext under it.
   auth_token_encrypted String?
   enabled              Boolean  @default(true)
   created_at           DateTime @default(now()) @db.Timestamptz(6)

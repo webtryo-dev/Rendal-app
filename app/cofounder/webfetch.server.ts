@@ -1,13 +1,26 @@
 import { lookup } from "node:dns/promises";
+import { lookup as lookupCallback } from "node:dns";
+import type { LookupAddress, LookupOptions } from "node:dns";
 import { isIP } from "node:net";
+import { Agent, fetch, type Response as UndiciResponse } from "undici";
 
 // ---------------------------------------------------------------------------
 // fetch_url — read-only web fetch for the chat model.
 //
 // Hard limits: HTTPS only, 10s timeout, 2MB response cap, redirects followed
 // manually (each hop re-validated), and every hostname resolved and checked
-// against private/internal IP ranges before connecting (SSRF guard).
-// Failures come back as one-line messages, never stack traces.
+// against private/internal IP ranges (SSRF guard).
+//
+// The authoritative SSRF guard runs at *connection time*: the fetch below uses
+// an undici Agent whose custom DNS lookup (guardedLookup) validates every
+// resolved address against the private/internal ranges right before the socket
+// connects — so the address that is checked is exactly the one connected to.
+// This closes the DNS-rebinding window that a separate pre-fetch resolution
+// leaves open (a host could pass an earlier check, then rebind to an internal
+// IP before fetch re-resolved on its own). assertSafeUrl still runs first as a
+// cheap fast-fail for scheme, literal IPs, and special hostnames — including on
+// every redirect hop — but the connect-time lookup is what actually protects
+// the connection. Failures come back as one-line messages, never stack traces.
 // ---------------------------------------------------------------------------
 
 const TIMEOUT_MS = 10_000;
@@ -16,7 +29,7 @@ const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RETURN_CHARS = 40_000;
 const MAX_REDIRECTS = 3;
 
-function isPrivateIpv4(address: string): boolean {
+export function isPrivateIpv4(address: string): boolean {
   const octets = address.split(".").map(Number);
   if (octets.length !== 4 || octets.some((o) => Number.isNaN(o))) return true;
   const [a, b] = octets;
@@ -34,7 +47,7 @@ function isPrivateIpv4(address: string): boolean {
   );
 }
 
-function isPrivateIp(address: string): boolean {
+export function isPrivateIp(address: string): boolean {
   const version = isIP(address);
   if (version === 4) return isPrivateIpv4(address);
   if (version === 6) {
@@ -57,7 +70,7 @@ function isPrivateIp(address: string): boolean {
 }
 
 /** Validate scheme + resolve the host, rejecting private/internal targets. */
-async function assertSafeUrl(raw: string): Promise<URL> {
+export async function assertSafeUrl(raw: string): Promise<URL> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -87,8 +100,50 @@ async function assertSafeUrl(raw: string): Promise<URL> {
   return url;
 }
 
+/**
+ * Connect-time SSRF guard, used as the undici Agent's DNS lookup. Resolves every
+ * candidate address and rejects if ANY is private/internal, so the socket can
+ * only ever connect to an address that passed the exact same isPrivateIp check —
+ * eliminating the DNS-rebinding gap between validation and connection. Matches
+ * node:net's LookupFunction signature so it can be dropped into connect.lookup.
+ */
+export function guardedLookup(
+  hostname: string,
+  options: LookupOptions,
+  callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void,
+): void {
+  // Force all:true so we see (and validate) every address the socket might use,
+  // regardless of what the socket layer asked for; answer in the shape it wants.
+  lookupCallback(hostname, { ...options, all: true, verbatim: true }, (err, addresses) => {
+    if (err) return callback(err, "", 0);
+    if (!addresses || addresses.length === 0) {
+      return callback(new Error(`Could not resolve host: ${hostname}.`) as NodeJS.ErrnoException, "", 0);
+    }
+    for (const entry of addresses) {
+      if (isPrivateIp(entry.address)) {
+        return callback(
+          new Error(`Blocked host: ${hostname} resolves to a private address.`) as NodeJS.ErrnoException,
+          "",
+          0,
+        );
+      }
+    }
+    if (options.all) return callback(null, addresses);
+    return callback(null, addresses[0].address, addresses[0].family);
+  });
+}
+
+/**
+ * Single shared dispatcher for fetch_url. Its custom lookup runs guardedLookup
+ * on every hostname resolution — including each redirect hop, since every hop
+ * in the loop below goes through this same Agent.
+ */
+const safeAgent = new Agent({
+  connect: { lookup: guardedLookup },
+});
+
 /** Read the body with a hard byte cap; abort the stream past the cap. */
-async function readCapped(response: Response): Promise<string> {
+async function readCapped(response: UndiciResponse): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = [];
@@ -136,9 +191,10 @@ export async function fetchUrlAsText(rawUrl: string): Promise<FetchResult> {
   try {
     let url = await assertSafeUrl(rawUrl);
 
-    let response: Response | null = null;
+    let response: UndiciResponse | null = null;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       response = await fetch(url, {
+        dispatcher: safeAgent,
         redirect: "manual",
         signal: AbortSignal.timeout(TIMEOUT_MS),
         headers: { "User-Agent": "Rendal-Shopify-App/1.0 (+https://app.rendal.io)", Accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.5" },
@@ -181,7 +237,11 @@ export async function fetchUrlAsText(rawUrl: string): Promise<FetchResult> {
       isError: false,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // undici reports connect-time failures — including the SSRF block raised by
+    // guardedLookup — as a generic "fetch failed" with the real reason on .cause;
+    // surface that so a blocked rebind is reportable, not swallowed as generic.
+    const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : undefined;
+    const message = cause ?? (error instanceof Error ? error.message : String(error));
     if (/abort|timeout/i.test(message)) {
       return { content: `Fetch failed: ${rawUrl} timed out after ${TIMEOUT_MS / 1000}s.`, isError: true };
     }
