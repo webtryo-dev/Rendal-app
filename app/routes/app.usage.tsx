@@ -127,8 +127,13 @@ const money = (n: number) => `$${n.toFixed(2)}`;
 
 // Hard navigation on purpose: the loader answers with the iframe-escaping
 // redirect, which needs a document request rather than an SPA data fetch.
+// The current query string (embedded, host, shop, …) must ride along: the
+// package's redirect helper only takes the App Bridge iframe-escape path when
+// the request URL carries embedded=1, and authenticate.admin needs the rest.
 const goToPlanSelection = () => {
-  window.location.assign("/app/usage?intent=choose_plan");
+  const params = new URLSearchParams(window.location.search);
+  params.set("intent", "choose_plan");
+  window.location.assign(`/app/usage?${params.toString()}`);
 };
 
 export default function UsagePage() {

@@ -4,16 +4,7 @@ import { applyPlanHandle } from "../plan-sync.server";
 
 // The Rendal chat is the app's home screen.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
-
-  // TEMP diagnostic: log the app handle so it can be captured for
-  // SHOPIFY_APP_HANDLE. Removed in a follow-up change.
-  const handleResponse = await admin.graphql(
-    `#graphql
-    query { currentAppInstallation { app { handle } } }`,
-  );
-  const handleJson = await handleResponse.json();
-  console.log("APP HANDLE:", handleJson.data?.currentAppInstallation?.app?.handle);
+  const { session } = await authenticate.admin(request);
 
   const url = new URL(request.url);
 
