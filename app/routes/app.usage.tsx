@@ -23,9 +23,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session, redirect: shopifyRedirect } = await authenticate.admin(request);
   const url = new URL(request.url);
 
-  // Outbound hop to Shopify's hosted plan-selection page. Embedded apps can't
-  // navigate the parent window from inside the iframe, so the package's
-  // redirect helper with target "_top" performs the escape.
+  // Fallback for old links only: the plan buttons now navigate the top window
+  // directly (see goToPlanSelection below), because this server hop only
+  // escapes the iframe when the document request still carries embedded=1 —
+  // and SPA navigation strips those params from the iframe URL.
   if (url.searchParams.get("intent") === "choose_plan") {
     return shopifyRedirect(planSelectionUrl(session.shop), { target: "_top" });
   }
@@ -57,6 +58,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const changedKey = mapShopifyPlanToKey(url.searchParams.get("plan_changed"));
 
   return {
+    planUrl: planSelectionUrl(session.shop),
     planLabel: cfg.label,
     planPriceUsd: cfg.priceUsd,
     includedCredits,
@@ -125,19 +127,17 @@ function Bar({ fraction, color }: { fraction: number; color: string }) {
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
-// Hard navigation on purpose: the loader answers with the iframe-escaping
-// redirect, which needs a document request rather than an SPA data fetch.
-// The current query string (embedded, host, shop, …) must ride along: the
-// package's redirect helper only takes the App Bridge iframe-escape path when
-// the request URL carries embedded=1, and authenticate.admin needs the rest.
-const goToPlanSelection = () => {
-  const params = new URLSearchParams(window.location.search);
-  params.set("intent", "choose_plan");
-  window.location.assign(`/app/usage?${params.toString()}`);
-};
-
 export default function UsagePage() {
   const data = useLoaderData<typeof loader>();
+
+  // Navigate the top window straight to Shopify's hosted plan page (managed
+  // pricing). Deliberately not a server round-trip: SPA navigation strips the
+  // embedded=1/host/shop params from the iframe URL, so a document request to
+  // our own loader can't reliably take the iframe-escape path. window.open
+  // with "_top" from a click handler is the documented App Bridge way out.
+  const goToPlanSelection = () => {
+    window.open(data.planUrl, "_top");
+  };
   const resetDate = new Date(data.resumesAt).toLocaleDateString(undefined, { dateStyle: "medium" });
 
   const creditsFraction =

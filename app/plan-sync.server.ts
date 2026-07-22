@@ -16,12 +16,13 @@ type ShopRow = { id: string; plan: string };
 
 /**
  * Shopify-hosted plan-selection page for this app (Shopify App Pricing).
- * The app handle is the App Store handle from the Partner Dashboard;
- * override with SHOPIFY_APP_HANDLE if it ever differs from "rendal".
+ * The app handle is the App Store handle from the Partner Dashboard,
+ * confirmed via currentAppInstallation.app.handle ("ai-name-app");
+ * override with SHOPIFY_APP_HANDLE if it ever changes.
  */
 export function planSelectionUrl(shopDomain: string): string {
   const storeHandle = shopDomain.replace(".myshopify.com", "");
-  const appHandle = process.env.SHOPIFY_APP_HANDLE || "rendal";
+  const appHandle = process.env.SHOPIFY_APP_HANDLE || "ai-name-app";
   return `https://admin.shopify.com/store/${storeHandle}/charges/${appHandle}/pricing_plans`;
 }
 

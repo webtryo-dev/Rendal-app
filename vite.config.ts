@@ -55,6 +55,14 @@ export default defineConfig({
   build: {
     assetsInlineLimit: 0,
   },
+  // boundary.error (@shopify/shopify-app-react-router) matches errors by
+  // error.constructor.name, which minification breaks — React Router's
+  // ErrorResponseImpl became `Ge` in the production bundle, so every thrown
+  // auth Response fell through to React Router's default boundary and
+  // rendered as a bare "200". keepNames preserves class/function .name.
+  esbuild: {
+    keepNames: true,
+  },
   optimizeDeps: {
     include: ["@shopify/app-bridge-react"],
   },
