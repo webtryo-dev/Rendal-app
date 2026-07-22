@@ -660,7 +660,7 @@ const GET_SHOP_INFO_QUERY = `#graphql
       currencyCode
       ianaTimezone
       weightUnit
-      plan { displayName partnerDevelopment shopifyPlus }
+      plan { publicDisplayName partnerDevelopment shopifyPlus }
       shopPolicies { type title url body }
     }
   }`;
