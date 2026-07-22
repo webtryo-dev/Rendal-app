@@ -17,10 +17,12 @@ import { isModelAllowed, requiredPlanForModelTier } from "../cofounder/capabilit
 import { planConfig } from "../cofounder/pricing.server";
 import {
   createChat,
+  deleteChat,
   getShopChat,
   listChats,
   loadChatMessages,
   persistMessages,
+  renameChat,
 } from "../cofounder/chats.server";
 import {
   MODEL_CATALOG,
@@ -81,7 +83,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 /** ChatTurnResult plus the chat the turn belongs to. */
 type ChatActionResult = Omit<ChatTurnResult, "usage" | "status"> & {
-  status: ChatTurnResult["status"] | "limit_reached" | "plan_upgrade_required";
+  status:
+    | ChatTurnResult["status"]
+    | "limit_reached"
+    | "plan_upgrade_required"
+    | "chat_renamed"
+    | "chat_deleted";
   chatId: string | null;
   /** Present when status is "limit_reached". */
   limit?: {
@@ -108,6 +115,20 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ChatActio
     const chat = await getShopChat(shop.id, body.chatId);
     if (!chat) return { status: "error", messages: [], chatId: null, errorMessage: "Chat not found." };
     return { status: "done", messages: await loadChatMessages(chat.id), chatId: chat.id };
+  }
+
+  if (body.intent === "rename_chat") {
+    const chat = await getShopChat(shop.id, body.chatId);
+    if (!chat) return { status: "error", messages: [], chatId: null, errorMessage: "Chat not found." };
+    await renameChat(shop.id, chat.id, String(body.title ?? ""));
+    return { status: "chat_renamed", messages: [], chatId: chat.id };
+  }
+
+  if (body.intent === "delete_chat") {
+    const chat = await getShopChat(shop.id, body.chatId);
+    if (!chat) return { status: "error", messages: [], chatId: null, errorMessage: "Chat not found." };
+    await deleteChat(shop.id, chat.id);
+    return { status: "chat_deleted", messages: [], chatId: chat.id };
   }
 
   // Billable intents are blocked once the shop has hit its overage ceiling
@@ -429,6 +450,10 @@ export default function CoFounderPage() {
   );
   const [skillQuery, setSkillQuery] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Sidebar row modes: one chat at most is being renamed or pending a
+  // delete confirmation at any time.
+  const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
+  const [confirmDeleteChatId, setConfirmDeleteChatId] = useState<string | null>(null);
 
   const inputRef = useRef<(HTMLElement & { value: string }) | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -449,6 +474,11 @@ export default function CoFounderPage() {
     const data = fetcher.data;
     if (!data || fetcher.state !== "idle" || data === lastHandledData.current) return;
     lastHandledData.current = data;
+
+    // Sidebar-only operations: the chats list refreshes via loader
+    // revalidation; the open conversation must not be touched. The active
+    // chat's cleanup on delete already happened in confirmDelete.
+    if (data.status === "chat_renamed" || data.status === "chat_deleted") return;
 
     if (data.status === "limit_reached" || data.status === "plan_upgrade_required") {
       if (data.status === "limit_reached") setLimitInfo(data.limit ?? null);
@@ -615,6 +645,40 @@ export default function CoFounderPage() {
     setNotice(null);
   };
 
+  const startRename = (chatId: string) => {
+    if (isBusy) return;
+    setConfirmDeleteChatId(null);
+    setRenamingChatId(chatId);
+  };
+
+  const commitRename = (chatId: string, raw: string) => {
+    setRenamingChatId(null);
+    const title = raw.trim();
+    const current = chats.find((c) => c.id === chatId)?.title ?? "";
+    if (!title || title === current) return; // blank keeps the existing title
+    submitJson({ intent: "rename_chat", chatId, title });
+  };
+
+  const requestDelete = (chatId: string) => {
+    if (isBusy) return;
+    setRenamingChatId(null);
+    setConfirmDeleteChatId(chatId);
+  };
+
+  const confirmDelete = (chatId: string) => {
+    if (isBusy) return;
+    setConfirmDeleteChatId(null);
+    // Deleting the open chat falls back to the no-chat-selected state,
+    // exactly like startNewChat.
+    if (chatId === activeChatId) {
+      setActiveChatId(null);
+      setMessages([]);
+      setPendingWrite(null);
+      setNotice(null);
+    }
+    submitJson({ intent: "delete_chat", chatId });
+  };
+
   const displayItems = toDisplayItems(messages);
 
   return (
@@ -633,17 +697,77 @@ export default function CoFounderPage() {
               {chats.length === 0 && (
                 <s-text color="subdued">No conversations yet.</s-text>
               )}
-              {chats.map((chat) => (
-                <s-clickable
-                  key={chat.id}
-                  padding="small-300"
-                  borderRadius="base"
-                  background={chat.id === activeChatId ? "subdued" : "transparent"}
-                  onClick={() => openChat(chat.id)}
-                >
-                  <s-text>{chat.title ?? "Untitled chat"}</s-text>
-                </s-clickable>
-              ))}
+              {chats.map((chat) =>
+                renamingChatId === chat.id ? (
+                  <s-box key={chat.id} padding="small-300" borderRadius="base" background="subdued">
+                    <input
+                      autoFocus
+                      defaultValue={chat.title ?? ""}
+                      aria-label="Chat title"
+                      onBlur={(e) => commitRename(chat.id, e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                        else if (e.key === "Escape") setRenamingChatId(null);
+                      }}
+                      style={{
+                        width: "100%",
+                        border: "1px solid rgba(128,128,128,0.5)",
+                        borderRadius: 4,
+                        padding: "4px 6px",
+                        font: "inherit",
+                        background: "transparent",
+                        color: "inherit",
+                      }}
+                    />
+                  </s-box>
+                ) : confirmDeleteChatId === chat.id ? (
+                  <s-box key={chat.id} padding="small-300" borderRadius="base" background="subdued">
+                    <s-stack direction="block" gap="small-300">
+                      <s-text>{`Delete "${chat.title ?? "Untitled chat"}"?`}</s-text>
+                      <s-stack direction="inline" gap="small-300">
+                        <s-button
+                          variant="primary"
+                          tone="critical"
+                          onClick={() => confirmDelete(chat.id)}
+                        >
+                          Delete
+                        </s-button>
+                        <s-button variant="tertiary" onClick={() => setConfirmDeleteChatId(null)}>
+                          Cancel
+                        </s-button>
+                      </s-stack>
+                    </s-stack>
+                  </s-box>
+                ) : (
+                  <div
+                    key={chat.id}
+                    style={{ display: "flex", alignItems: "center", gap: 2 }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <s-clickable
+                        padding="small-300"
+                        borderRadius="base"
+                        background={chat.id === activeChatId ? "subdued" : "transparent"}
+                        onClick={() => openChat(chat.id)}
+                      >
+                        <s-text>{chat.title ?? "Untitled chat"}</s-text>
+                      </s-clickable>
+                    </div>
+                    <s-button
+                      variant="tertiary"
+                      icon="edit"
+                      accessibilityLabel="Rename chat"
+                      onClick={() => startRename(chat.id)}
+                    ></s-button>
+                    <s-button
+                      variant="tertiary"
+                      icon="delete"
+                      accessibilityLabel="Delete chat"
+                      onClick={() => requestDelete(chat.id)}
+                    ></s-button>
+                  </div>
+                ),
+              )}
             </s-stack>
             <s-divider></s-divider>
             <s-heading>Customize</s-heading>

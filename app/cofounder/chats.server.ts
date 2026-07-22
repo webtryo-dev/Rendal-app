@@ -29,14 +29,46 @@ interface ToolMeta {
   syntheticId?: boolean;
 }
 
+const TITLE_MAX = 48;
+
+function capTitle(title: string) {
+  return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX)}…` : title;
+}
+
 export async function createChat(shopId: string, firstMessage: string) {
-  const title = firstMessage.length > 48 ? `${firstMessage.slice(0, 48)}…` : firstMessage;
-  return prisma.chats.create({ data: { shop_id: shopId, title } });
+  return prisma.chats.create({ data: { shop_id: shopId, title: capTitle(firstMessage) } });
 }
 
 export async function getShopChat(shopId: string, chatId: string) {
   const chat = await prisma.chats.findUnique({ where: { id: chatId } });
   return chat && chat.shop_id === shopId ? chat : null;
+}
+
+/**
+ * Rename a chat. Blank titles keep the existing one; long titles are capped
+ * the same way createChat caps derived titles. Returns null when the chat
+ * doesn't belong to the shop.
+ */
+export async function renameChat(shopId: string, chatId: string, title: string) {
+  const chat = await getShopChat(shopId, chatId);
+  if (!chat) return null;
+  const trimmed = title.trim();
+  if (!trimmed) return chat;
+  return prisma.chats.update({ where: { id: chat.id }, data: { title: capTitle(trimmed) } });
+}
+
+/**
+ * Delete a chat; chat_messages.chat_id is ON DELETE CASCADE so its messages
+ * go with it. Safe for billing history — verified against the live database
+ * (pg_constraint): credit_ledger.chat_message_id is ON DELETE SET NULL, so
+ * ledger rows survive with the message pointer nulled rather than blocking
+ * the delete. Returns false when the chat doesn't belong to the shop.
+ */
+export async function deleteChat(shopId: string, chatId: string) {
+  const chat = await getShopChat(shopId, chatId);
+  if (!chat) return false;
+  await prisma.chats.delete({ where: { id: chat.id } });
+  return true;
 }
 
 export async function listChats(shopId: string) {

@@ -4,8 +4,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { ensureShop } from "../shop.server";
 import { getOverageStatus, rolloverBillingPeriod } from "../cofounder/overage.server";
-import { planConfig, PLANS } from "../cofounder/pricing.server";
-import { normalizePlan, PLAN_ORDER, type PlanKey } from "../cofounder/capabilities.server";
+import { planConfig } from "../cofounder/pricing.server";
 import {
   applyPlanHandle,
   mapShopifyPlanToKey,
@@ -54,7 +53,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // (e.g. a dev store that skipped the plan interstitial) — a failed lookup
   // keeps the stored plan and stays quiet.
   const noPlanSelected = sync.hasActiveSubscription === false;
-  const currentPlan = normalizePlan(shop.plan);
   const changedKey = mapShopifyPlanToKey(url.searchParams.get("plan_changed"));
 
   return {
@@ -70,42 +68,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     resumesAt: overage.resumesAt.toISOString(),
     noPlanSelected,
     planChangedLabel: changedKey ? planConfig(changedKey).label : null,
-    tiers: PLAN_ORDER.map((key) => ({
-      key,
-      label: PLANS[key].label,
-      priceUsd: PLANS[key].priceUsd,
-      includedCredits: Number(PLANS[key].includedCredits),
-      isCurrent: !noPlanSelected && key === currentPlan,
-    })),
   };
-};
-
-// UI mirror of the plan feature matrix (capabilities.server.ts is the map
-// that actually gates access; DESIGN.md holds the model-tier table).
-const PLAN_FEATURES: Record<PlanKey, string[]> = {
-  starter: [
-    "Standard AI models",
-    "Product, inventory & theme editing",
-    "Percentage-off discount codes",
-    "Web research",
-  ],
-  growth: [
-    "Everything in Starter",
-    "Full discount suite (BXGY, free shipping)",
-    "Shipping zones & rates",
-  ],
-  scale: [
-    "Everything in Growth",
-    "Premium AI models",
-    "AI image generation",
-    "Analytics & customer exports",
-  ],
-  founder: [
-    "Everything in Scale",
-    "Flagship AI models",
-    "Theme publishing",
-    "Store policy updates",
-  ],
 };
 
 function Bar({ fraction, color }: { fraction: number; color: string }) {
@@ -182,54 +145,14 @@ export default function UsagePage() {
               {data.noPlanSelected ? "Choose a plan to get started" : "Change plan"}
             </s-heading>
             <s-text color="subdued">
-              Plan changes are handled by Shopify — any button below opens the plan page in your
-              admin, where you can upgrade or downgrade at any time.
+              Plans and billing are handled by Shopify — the button below opens the plan page in
+              your admin, where you can compare tiers and upgrade or downgrade at any time.
             </s-text>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                gap: 12,
-              }}
-            >
-              {data.tiers.map((tier) => (
-                <div
-                  key={tier.key}
-                  style={{
-                    border: tier.isCurrent
-                      ? "2px solid #2e7d32"
-                      : "1px solid rgba(128,128,128,0.35)",
-                    borderRadius: 8,
-                    padding: 16,
-                  }}
-                >
-                  <s-stack direction="block" gap="small-300">
-                    <s-stack direction="inline" gap="small-300" alignItems="center">
-                      <s-heading>{tier.label}</s-heading>
-                      {tier.isCurrent && <s-badge tone="success">Current plan</s-badge>}
-                    </s-stack>
-                    <s-text>{`${money(tier.priceUsd)} / month`}</s-text>
-                    <s-text color="subdued">
-                      {`${tier.includedCredits.toLocaleString()} credits included`}
-                    </s-text>
-                    {PLAN_FEATURES[tier.key].map((feature) => (
-                      <s-text key={feature} color="subdued">{`• ${feature}`}</s-text>
-                    ))}
-                    <s-button
-                      variant={tier.isCurrent ? "secondary" : "primary"}
-                      disabled={tier.isCurrent || undefined}
-                      onClick={goToPlanSelection}
-                    >
-                      {tier.isCurrent
-                        ? "Current plan"
-                        : data.noPlanSelected
-                          ? `Choose ${tier.label}`
-                          : `Switch to ${tier.label}`}
-                    </s-button>
-                  </s-stack>
-                </div>
-              ))}
-            </div>
+            <s-stack direction="inline" gap="base">
+              <s-button variant="primary" onClick={goToPlanSelection}>
+                {data.noPlanSelected ? "Choose a plan" : "Switch plan"}
+              </s-button>
+            </s-stack>
           </s-stack>
         </s-section>
 
