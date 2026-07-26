@@ -170,33 +170,71 @@ function setShopStep(shopId: string, step: string | null): void {
 }
 
 /**
- * Real-cost dollars this turn may spend before it must stop.
+ * Share of a plan's monthly included pool any single turn may consume.
+ *
+ * Model-agnostic on purpose. Cost per iteration varies ~7x across the catalog
+ * (Gemini 3.5 Flash vs Fable 5), so a flat step cap means wildly different
+ * spend depending on the model selected — at 50 iterations Flash costs ~$11
+ * and Fable ~$72. Expressing the limit as a fraction of the pool says the
+ * thing we actually mean — "no one question should eat a quarter of the
+ * month" — and stays correct if prices or models change.
+ *
+ * This binds separately from (and usually before) the affordability budget
+ * below: a Founder shop can afford a $60 turn, but shouldn't spend it all on
+ * one prompt by accident.
+ */
+const MAX_TURN_SHARE_OF_POOL = 0.25;
+
+/**
+ * Real-cost dollars this turn may spend before it must stop — the lesser of
+ * what the shop can afford and the per-turn share above.
  *
  * The ceiling check in app.cofounder.tsx runs ONCE, before the turn starts, and
  * recordUsage only settles up AFTER it ends — so nothing inside the loop was
  * watching spend. At 8 iterations that gap was small; at 50 it isn't. A single
- * long Fable 5 turn (context is resent every call, so cost per call climbs)
- * can out-spend an entire month's included pool on any plan.
+ * long turn (context is resent every call, so cost per call climbs) can
+ * out-spend an entire month's included pool on any plan and any model.
  *
- * Budget = whatever included credits remain, plus the unused overage headroom.
- * Anything past that either can't be billed at all (reportOverage withholds the
- * event once the ceiling is crossed, so WE absorb the API cost) or would bill
- * the merchant beyond the cap they were shown. Both are bad; stop instead.
+ * Affordability = whatever included credits remain, plus unused overage
+ * headroom. Anything past that either can't be billed at all (reportOverage
+ * withholds the event once the ceiling is crossed, so WE absorb the API cost)
+ * or would bill the merchant beyond the cap they were shown.
  */
-async function turnBudgetUsd(shopId: string): Promise<number> {
+interface TurnBudget {
+  usd: number;
+  /** True when the per-turn share bound first, not the shop's balance — the
+   *  two need different merchant guidance ("ask for less at once" vs
+   *  "you're out of allowance"). */
+  cappedByShare: boolean;
+}
+
+async function turnBudgetUsd(shopId: string): Promise<TurnBudget> {
   try {
     const shop = await prisma.shops.findUnique({
       where: { id: shopId },
       select: { id: true, plan: true, credit_balance: true, billing_period_start: true },
     });
-    if (!shop) return Infinity; // never block a turn on a bookkeeping miss
+    // Never block a turn on a bookkeeping miss.
+    if (!shop) return { usd: Infinity, cappedByShare: false };
     const remainingIncludedUsd =
       shop.credit_balance > 0n ? Number(shop.credit_balance) / REAL_COST_CREDIT_RATE : 0;
     const overage = await getOverageStatus(shop);
     const headroomUsd = Math.max(0, overage.ceilingUsd - overage.overageDollars);
-    return remainingIncludedUsd + headroomUsd;
+    const affordableUsd = remainingIncludedUsd + headroomUsd;
+
+    // Per-turn share is computed from the plan's FULL monthly pool, not the
+    // remaining balance — otherwise the allowance per turn would shrink as the
+    // month is used up, so the same prompt would get further on day 1 than on
+    // day 20. A fixed slice keeps behaviour predictable all period.
+    const poolUsd = Number(planConfig(shop.plan).includedCredits) / REAL_COST_CREDIT_RATE;
+    const perTurnCapUsd = poolUsd * MAX_TURN_SHARE_OF_POOL;
+
+    return {
+      usd: Math.min(affordableUsd, perTurnCapUsd),
+      cappedByShare: perTurnCapUsd < affordableUsd,
+    };
   } catch {
-    return Infinity;
+    return { usd: Infinity, cappedByShare: false };
   }
 }
 
@@ -218,18 +256,18 @@ async function runLoop(
   const skills = await matchSkills(shopDomain, msgs);
 
   // Snapshot the spend budget once; track this turn's cost against it as we go.
-  const budgetUsd = await turnBudgetUsd(shopId);
+  const budget = await turnBudgetUsd(shopId);
   let spentUsd = 0;
-  let stopReason: "step_cap" | "budget" = "step_cap";
+  let stopReason: "step_cap" | "turn_cap" | "out_of_allowance" = "step_cap";
 
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-    // Stop before starting another billable call once this turn has spent what
-    // the shop actually has. Breaking (not returning) routes into the wrap-up
-    // call below, so the merchant still gets the work done so far.
-    if (spentUsd >= budgetUsd) {
-      stopReason = "budget";
+    // Stop before starting another billable call once this turn has spent its
+    // budget. Breaking (not returning) routes into the wrap-up call below, so
+    // the merchant still gets the work done so far.
+    if (spentUsd >= budget.usd) {
+      stopReason = budget.cappedByShare ? "turn_cap" : "out_of_allowance";
       console.warn(
-        `[cofounder] shop ${shopId}: turn stopped at iteration ${i} — spent $${spentUsd.toFixed(4)} of $${budgetUsd.toFixed(4)} budget.`,
+        `[cofounder] shop ${shopId}: turn stopped at iteration ${i} (${stopReason}) — spent $${spentUsd.toFixed(4)} of $${budget.usd.toFixed(4)}.`,
       );
       break;
     }
@@ -425,9 +463,11 @@ async function runLoop(
         {
           role: "user",
           text:
-            stopReason === "budget"
+            stopReason === "out_of_allowance"
               ? "This turn has used up the store's remaining usage allowance, so no more tools are available right now. Do not describe this as an error or a bug — it is the usage limit working as intended. In plain text, tell the merchant what you found or completed so far, what's still unfinished, and that continuing will need either their next billing period or a plan upgrade (point them at the Usage page)."
-              : "You've reached this turn's limit on tool calls, so no more tools are available right now. Do not describe this as an error or a failure — it is a normal limit. In plain text, tell the merchant what you found or completed so far, anything still unfinished, and exactly what you'd do next if they reply 'continue'.",
+              : stopReason === "turn_cap"
+                ? "This single request has reached the maximum any one request may use, so no more tools are available in this turn. The store still has allowance left — this is a per-request limit, not an out-of-credit situation, and it is not an error or a bug. In plain text, tell the merchant what you found or completed so far, what's still unfinished, and that they can simply reply 'continue' or ask for the next piece to carry on."
+                : "You've reached this turn's limit on tool calls, so no more tools are available right now. Do not describe this as an error or a failure — it is a normal limit. In plain text, tell the merchant what you found or completed so far, anything still unfinished, and exactly what you'd do next if they reply 'continue'.",
         },
       ],
       tools: [],
@@ -452,9 +492,11 @@ async function runLoop(
     status: "error",
     messages: msgs,
     errorMessage:
-      stopReason === "budget"
+      stopReason === "out_of_allowance"
         ? "This request used up the usage allowance left in this billing period, so it stopped partway. Check the Usage page for where things stand — a plan upgrade or the next billing period will let it continue."
-        : "This request needed more steps than one turn allows. Ask for the next piece on its own — for example one product or one change at a time — and I'll carry on from here.",
+        : stopReason === "turn_cap"
+          ? "This request reached the most a single request can use, so it stopped partway. Your allowance isn't used up — reply 'continue', or ask for the next piece on its own, and I'll carry on from here."
+          : "This request needed more steps than one turn allows. Ask for the next piece on its own — for example one product or one change at a time — and I'll carry on from here.",
     usage,
   };
 }
