@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   PLAN_ORDER,
   isModelAllowed,
@@ -8,6 +8,14 @@ import {
   requiredPlanForTool,
 } from "./capabilities.server";
 import type { ModelTier } from "./types";
+// Statically imported so the (slow) transitive load happens at module init,
+// not inside a test body where it would trip the per-test timeout.
+import { TOOL_DEFS } from "./tools.server";
+
+// tools.server.ts pulls in the image tools, which import the Prisma client.
+vi.mock("../db.server", () => ({ default: {} }));
+
+const ALL_TOOL_NAMES = TOOL_DEFS.map((d) => d.name);
 
 // One representative tool from each plan band (see TOOLS_ADDED_BY_PLAN).
 const STARTER_TOOL = "search_products";
@@ -85,6 +93,37 @@ describe("isToolAllowed", () => {
   it("treats an unknown plan as starter", () => {
     expect(isToolAllowed("bogus", STARTER_TOOL)).toBe(true);
     expect(isToolAllowed("bogus", GROWTH_TOOL)).toBe(false);
+  });
+});
+
+// Regression guard: a tool that exists but was never assigned to a plan band
+// is denied on EVERY plan (isToolAllowed denies unknown names), including
+// Founder. That silently shipped for the variant/option/product-image tools
+// and the shipping deletes — merchants on the top plan were told the feature
+// "isn't available on your plan" for tools every plan should have had.
+describe("TOOL_DEFS ↔ plan-map drift guard", () => {
+  it("assigns every defined tool to at least one plan", () => {
+    const unassigned = ALL_TOOL_NAMES.filter((name) => requiredPlanForTool(name) === null);
+    expect(unassigned).toEqual([]);
+  });
+
+  it("grants the top plan every defined tool", () => {
+    const topPlan = PLAN_ORDER[PLAN_ORDER.length - 1];
+    const denied = ALL_TOOL_NAMES.filter((name) => !isToolAllowed(topPlan, name));
+    expect(denied).toEqual([]);
+  });
+});
+
+describe("plans are strictly cumulative", () => {
+  it("gives each plan every tool unlocked by the plans below it", () => {
+    for (let i = 1; i < PLAN_ORDER.length; i++) {
+      const lower = PLAN_ORDER[i - 1];
+      const higher = PLAN_ORDER[i];
+      const lost = ALL_TOOL_NAMES.filter(
+        (n) => isToolAllowed(lower, n) && !isToolAllowed(higher, n),
+      );
+      expect(lost, `${higher} must inherit everything ${lower} has`).toEqual([]);
+    }
   });
 });
 

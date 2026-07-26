@@ -27,7 +27,9 @@ import {
   type UsageEntry,
 } from "./cofounder/types";
 import { isToolAllowed, requiredPlanForTool } from "./cofounder/capabilities.server";
-import { planConfig } from "./cofounder/pricing.server";
+import { planConfig, REAL_COST_CREDIT_RATE } from "./cofounder/pricing.server";
+import { costUsd } from "./cofounder/billing.server";
+import { getOverageStatus } from "./cofounder/overage.server";
 import prisma from "./db.server";
 
 export { MODEL_CATALOG };
@@ -58,7 +60,21 @@ async function matchSkills(shop: string, messages: NeutralMessage[]): Promise<Ma
   return skills;
 }
 
-const MAX_TOOL_ITERATIONS = 8;
+// Model calls allowed in one turn. Each read tool result feeds another call,
+// so research-heavy requests ("check a few competitor listings, then build the
+// product") burn several before any write is proposed. Raised 8 → 50 to let
+// long multi-step turns run to completion.
+//
+// This is the ONLY bound on a runaway loop, and the ceiling is not free: the
+// conversation is resent on every iteration, so token cost per call grows as
+// the turn goes on, and a turn that actually runs all 50 is far more than ~4x
+// the credits of one that ran 12. The overage ceiling in overage.server.ts is
+// what stops that becoming an unbounded merchant bill; this cap is what stops
+// a single stuck turn eating a plan's whole credit pool. Revisit if real usage
+// shows turns regularly running past ~20.
+//
+// Hitting the cap is not fatal — see the wrap-up call after the loop.
+const MAX_TOOL_ITERATIONS = 50;
 
 // Merchant-facing action phrase per plan-gated tool, used to build the plain
 // in-chat "available on the X plan" message the model relays when a tool is
@@ -123,7 +139,8 @@ function buildSystemPrompt(shopDomain: string, skills: MatchedSkill[]): string {
       "Customer names, emails, phones and addresses are Protected Customer Data; if a customer read is denied, relay the short explanation you get back rather than guessing — and never paste a generated CSV's contents into the chat, just point the merchant to the download.",
       "You can read general store settings (get_shop_info) and propose replacing a legal policy — refund, privacy, shipping, or terms of service — with update_shop_policies, which the merchant approves via a before/after diff. Read the current policy first. Shopify's API does NOT let a third-party app configure taxes, payment providers, or other installed apps, so you cannot do those — say so plainly if asked rather than pretending.",
       "Reads run automatically. Write tools (update_product, set_inventory_quantity, create_discount_code) only PROPOSE an action: the merchant sees an approval dialog and may decline — never claim an action happened until you receive a tool result saying so.",
-      "Propose at most one gated action at a time.",
+      "Propose at most one gated action at a time — call a write tool only once per turn, even if the request covers many items (e.g. \"add 99 units to all products\"). If a request needs the same change repeated across multiple items, propose it for the first item only, tell the merchant you'll do the rest one at a time as each is approved, then continue with the next item on your following turn — never call the same or another gated write tool a second time before the current one is resolved.",
+      "If a tool result says \"only one gated action can be proposed at a time,\" that is not a failure or a bug — it means you (not the merchant, not Shopify) tried to propose more than one write in a single turn. Don't describe it to the merchant as an error, a Shopify API bug, or something to work around manually; just move on and propose the next item's change normally.",
       "You can READ theme code (Liquid, JSON templates, CSS, JS) to explain how the storefront works and diagnose theme issues, but you cannot modify or publish themes — Shopify does not permit this app to change theme files. If a merchant asks for a theme change, say plainly that theme editing isn't available here and suggest they or their designer make the change in the admin theme editor. Do not paste blocks of theme code for the merchant to copy in.",
       "You can generate images from a text prompt (generate_image) — mockups, banners, ad creative, logo concepts. The image is shown to the merchant. After generating, OFFER to save it to the store's Files (upload_image_to_files) and let the merchant approve; never upload without being asked.",
       "Be concise and practical. Use plain text (no markdown tables). When you list products, mention titles rather than raw GIDs.",
@@ -152,6 +169,37 @@ function setShopStep(shopId: string, step: string | null): void {
   void prisma.shops.update({ where: { id: shopId }, data: { current_step: step } }).catch(() => {});
 }
 
+/**
+ * Real-cost dollars this turn may spend before it must stop.
+ *
+ * The ceiling check in app.cofounder.tsx runs ONCE, before the turn starts, and
+ * recordUsage only settles up AFTER it ends — so nothing inside the loop was
+ * watching spend. At 8 iterations that gap was small; at 50 it isn't. A single
+ * long Fable 5 turn (context is resent every call, so cost per call climbs)
+ * can out-spend an entire month's included pool on any plan.
+ *
+ * Budget = whatever included credits remain, plus the unused overage headroom.
+ * Anything past that either can't be billed at all (reportOverage withholds the
+ * event once the ceiling is crossed, so WE absorb the API cost) or would bill
+ * the merchant beyond the cap they were shown. Both are bad; stop instead.
+ */
+async function turnBudgetUsd(shopId: string): Promise<number> {
+  try {
+    const shop = await prisma.shops.findUnique({
+      where: { id: shopId },
+      select: { id: true, plan: true, credit_balance: true, billing_period_start: true },
+    });
+    if (!shop) return Infinity; // never block a turn on a bookkeeping miss
+    const remainingIncludedUsd =
+      shop.credit_balance > 0n ? Number(shop.credit_balance) / REAL_COST_CREDIT_RATE : 0;
+    const overage = await getOverageStatus(shop);
+    const headroomUsd = Math.max(0, overage.ceilingUsd - overage.overageDollars);
+    return remainingIncludedUsd + headroomUsd;
+  } catch {
+    return Infinity;
+  }
+}
+
 async function runLoop(
   admin: AdminContext,
   shopDomain: string,
@@ -169,7 +217,22 @@ async function runLoop(
   const usage: UsageEntry[] = [];
   const skills = await matchSkills(shopDomain, msgs);
 
+  // Snapshot the spend budget once; track this turn's cost against it as we go.
+  const budgetUsd = await turnBudgetUsd(shopId);
+  let spentUsd = 0;
+  let stopReason: "step_cap" | "budget" = "step_cap";
+
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    // Stop before starting another billable call once this turn has spent what
+    // the shop actually has. Breaking (not returning) routes into the wrap-up
+    // call below, so the merchant still gets the work done so far.
+    if (spentUsd >= budgetUsd) {
+      stopReason = "budget";
+      console.warn(
+        `[cofounder] shop ${shopId}: turn stopped at iteration ${i} — spent $${spentUsd.toFixed(4)} of $${budgetUsd.toFixed(4)} budget.`,
+      );
+      break;
+    }
     // Back to "Thinking…" before each model call — the merchant sees this
     // between tool steps too (e.g. after a read result comes back).
     setShopStep(shopId, "Thinking…");
@@ -179,12 +242,14 @@ async function runLoop(
       messages: msgs,
       tools: TOOL_DEFS,
     });
-    usage.push({
+    const entry: UsageEntry = {
       provider: model.provider,
       modelId: model.id,
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
-    });
+    };
+    usage.push(entry);
+    spentUsd += costUsd(entry);
 
     if (response.refusal) {
       return {
@@ -255,7 +320,10 @@ async function runLoop(
             ...details,
           };
         } else {
-          msgs.push(toolMessage(call, "Not executed: only one gated action can be proposed at a time. Propose it again after the current one is resolved.", true));
+          // isError: false — this is an expected constraint, not a failure. A
+          // true isError here previously led the model to describe it to the
+          // merchant as a backend/Shopify bug instead of just moving on.
+          msgs.push(toolMessage(call, "Not run: only one gated action can be proposed per turn. This is expected, not an error — do not mention it to the merchant. Propose this item's change again on your next turn, after the current pending one is approved or declined.", false));
         }
       } else if (call.name === "generate_image") {
         // Image generation calls a paid external API and produces bytes we
@@ -342,10 +410,51 @@ async function runLoop(
     }
   }
 
+  // Cap reached. Rather than throwing the whole turn away — the merchant has
+  // already paid for every call above and would see only an error — make one
+  // final call with NO tools, so the model must answer in prose: what it found,
+  // what it did, and what it wants to do next. The merchant can then say
+  // "continue" and the work resumes from real context instead of restarting.
+  setShopStep(shopId, "Wrapping up…");
+  try {
+    const wrapUp = await completeWithRetry(adapter, {
+      model,
+      system: buildSystemPrompt(shopDomain, skills),
+      messages: [
+        ...msgs,
+        {
+          role: "user",
+          text:
+            stopReason === "budget"
+              ? "This turn has used up the store's remaining usage allowance, so no more tools are available right now. Do not describe this as an error or a bug — it is the usage limit working as intended. In plain text, tell the merchant what you found or completed so far, what's still unfinished, and that continuing will need either their next billing period or a plan upgrade (point them at the Usage page)."
+              : "You've reached this turn's limit on tool calls, so no more tools are available right now. Do not describe this as an error or a failure — it is a normal limit. In plain text, tell the merchant what you found or completed so far, anything still unfinished, and exactly what you'd do next if they reply 'continue'.",
+        },
+      ],
+      tools: [],
+    });
+    usage.push({
+      provider: model.provider,
+      modelId: model.id,
+      inputTokens: wrapUp.usage.inputTokens,
+      outputTokens: wrapUp.usage.outputTokens,
+    });
+    if (wrapUp.text.trim()) {
+      msgs.push(toAssistantMessage(model, { ...wrapUp, toolCalls: [] }));
+      return { status: "done", messages: msgs, usage };
+    }
+  } catch (error) {
+    // A provider may reject an empty tool list (Gemini requires at least one
+    // functionDeclaration). Fall through to the plain message below.
+    console.error("[cofounder] wrap-up call after tool-iteration cap failed:", error);
+  }
+
   return {
     status: "error",
     messages: msgs,
-    errorMessage: "The assistant used too many tool calls in one turn. Try a more specific request.",
+    errorMessage:
+      stopReason === "budget"
+        ? "This request used up the usage allowance left in this billing period, so it stopped partway. Check the Usage page for where things stand — a plan upgrade or the next billing period will let it continue."
+        : "This request needed more steps than one turn allows. Ask for the next piece on its own — for example one product or one change at a time — and I'll carry on from here.",
     usage,
   };
 }

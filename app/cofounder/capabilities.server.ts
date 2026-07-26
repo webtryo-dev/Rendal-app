@@ -54,6 +54,18 @@ const TOOLS_ADDED_BY_PLAN: Record<PlanKey, string[]> = {
     "create_product",
     "update_product",
     "delete_product",
+    // variant + option management, and attaching/removing product images.
+    // These are part of Starter's "Full product & inventory management" —
+    // they were missing from this map entirely, which (because
+    // isToolAllowed denies unknown names) blocked them on EVERY plan,
+    // including Founder. See the TOOL_DEFS drift guard in the test file.
+    "create_product_variants",
+    "update_variant",
+    "delete_variant",
+    "create_product_options",
+    "update_product_option",
+    "attach_product_images",
+    "remove_product_image",
     // inventory
     "get_inventory_levels",
     "set_inventory_quantity",
@@ -77,6 +89,11 @@ const TOOLS_ADDED_BY_PLAN: Record<PlanKey, string[]> = {
     "create_shipping_zone",
     "update_shipping_zone",
     "set_shipping_rate",
+    // Deletes belong with the zone/rate tools above; they were missing from
+    // this map, so they were blocked on every plan (same bug as the variant
+    // tools in the starter band).
+    "delete_shipping_zone",
+    "delete_shipping_rate",
     "create_bxgy_discount",
     "create_free_shipping_discount",
     "update_discount_code",
