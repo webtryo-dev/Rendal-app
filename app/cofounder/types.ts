@@ -17,10 +17,10 @@ export interface CatalogModel {
 // See DESIGN.md — Model catalog & tiers. Plan gating of tiers is Phase 5.
 export const MODEL_CATALOG: CatalogModel[] = [
   { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "claude", providerLabel: "Claude", tier: "standard", enabled: true },
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8", provider: "claude", providerLabel: "Claude", tier: "premium", enabled: true },
+  { id: "claude-opus-5", label: "Claude Opus 5", provider: "claude", providerLabel: "Claude", tier: "premium", enabled: true },
   { id: "claude-fable-5", label: "Claude Fable 5", provider: "claude", providerLabel: "Claude", tier: "flagship", enabled: true },
   { id: "gpt-5.4", label: "GPT-5.4", provider: "gpt", providerLabel: "GPT", tier: "standard", enabled: true },
-  // Premium tier is Claude Opus 4.8 + Gemini 3.1 Pro only — no GPT model.
+  // Premium tier is Claude Opus 5 + Gemini 3.1 Pro only — no GPT model.
   { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", provider: "gpt", providerLabel: "GPT", tier: "flagship", enabled: true },
   { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", provider: "gemini", providerLabel: "Gemini", tier: "standard", enabled: true },
   { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", provider: "gemini", providerLabel: "Gemini", tier: "premium", enabled: true },

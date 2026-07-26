@@ -171,7 +171,7 @@ const claudeAdapter: ModelAdapter = {
       ...(isFable
         ? {
             betas: ["server-side-fallback-2026-06-01"],
-            fallbacks: [{ model: "claude-opus-4-8" }],
+            fallbacks: [{ model: "claude-opus-5" }],
           }
         : { thinking: { type: "adaptive" } }),
     });

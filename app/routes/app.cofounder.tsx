@@ -309,7 +309,7 @@ function toDisplayItems(messages: NeutralMessage[]): DisplayItem[] {
       items.push({
         key: `${mi}-fallback`,
         kind: "status",
-        text: "Claude Fable 5 declined — continued on Claude Opus 4.8.",
+        text: "Claude Fable 5 declined — continued on Claude Opus 5.",
       });
     }
     if (message.text.trim()) {

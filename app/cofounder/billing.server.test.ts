@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { costUsd, dbProvider, recordUsage } from "./billing.server";
+import {
+  costUsd,
+  dbProvider,
+  includedRealCostUsd,
+  opus5Credits,
+  opus5TurnsInIncludedBudget,
+  recordUsage,
+} from "./billing.server";
 import type { UsageEntry } from "./types";
 import type { AdminContext } from "./tools.server";
 import prisma from "../db.server";
@@ -101,6 +108,36 @@ describe("costUsd", () => {
 
   it("costs zero for zero tokens", () => {
     expect(costUsd({ provider: "claude", modelId: "claude-sonnet-5", inputTokens: 0, outputTokens: 0 })).toBe(0);
+  });
+});
+
+describe("includedRealCostUsd", () => {
+  it("expresses each plan's included credits as real-cost dollars (credits / 250,000)", () => {
+    expect(includedRealCostUsd("starter")).toBeCloseTo(3.998, 10);
+    expect(includedRealCostUsd("growth")).toBeCloseTo(9.998, 10);
+    expect(includedRealCostUsd("scale")).toBeCloseTo(29.998, 10);
+    expect(includedRealCostUsd("founder")).toBeCloseTo(59.998, 10);
+  });
+});
+
+describe("opus5TurnsInIncludedBudget", () => {
+  it("returns a positive integer turn count for a moderate turn on scale and founder", () => {
+    const scaleTurns = opus5TurnsInIncludedBudget("scale", 8_000, 1_500);
+    const founderTurns = opus5TurnsInIncludedBudget("founder", 8_000, 1_500);
+    expect(Number.isInteger(scaleTurns)).toBe(true);
+    expect(scaleTurns).toBeGreaterThan(0);
+    expect(Number.isInteger(founderTurns)).toBe(true);
+    expect(founderTurns).toBeGreaterThan(0);
+    // Values documented in the comment table above the helper.
+    expect(scaleTurns).toBe(387);
+    expect(founderTurns).toBe(774);
+  });
+});
+
+describe("opus5Credits", () => {
+  it("agrees with OPUS_5_CREDITS_PER_TOKEN at 1M tokens each way", () => {
+    expect(opus5Credits(1_000_000, 0)).toBe(1_250_000);
+    expect(opus5Credits(0, 1_000_000)).toBe(6_250_000);
   });
 });
 

@@ -81,7 +81,7 @@ Reads never prompt.
 | Tier     | Claude          | GPT       | Gemini            | Available on plan |
 |----------|-----------------|-----------|-------------------|-------------------|
 | Standard | Claude Sonnet 5 | GPT-5.4   | Gemini 3.5 Flash  | all plans         |
-| Premium  | Claude Opus 4.8 | —         | Gemini 3.1 Pro    | Scale, Founder    |
+| Premium  | Claude Opus 5   | —         | Gemini 3.1 Pro    | Scale, Founder    |
 | Flagship | Claude Fable 5  | GPT-5.6 Sol | —               | Founder only      |
 
 Models above the shop's plan appear in the switcher disabled with an upgrade hint.
